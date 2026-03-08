@@ -12,7 +12,6 @@ from typing import Optional
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -20,18 +19,11 @@ load_dotenv()
 
 from advisor.agents import generate_proposal
 from database.db import (
-    Result,
-    Settings,
-    get_db,
-    get_latest_proposal,
-    get_proposal_by_date,
-    get_settings,
-    init_db,
-    list_proposals,
-    list_results,
-    save_proposal,
-    save_result,
-    upsert_settings,
+    get_db, init_db,
+    get_settings, upsert_settings,
+    get_portfolio, add_position, reduce_position,
+    save_proposal, get_proposal_by_date, get_latest_proposal, list_proposals,
+    save_trade_result, list_trade_results, get_total_pnl,
 )
 
 logging.basicConfig(
@@ -50,7 +42,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="kabu-advisor", lifespan=lifespan)
 
 
-# ── HTML ─────────────────────────────────────────────────────────────────────
+# ── HTML ──────────────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
@@ -59,22 +51,19 @@ async def index():
         return HTMLResponse(content=f.read())
 
 
-# ── Pydantic スキーマ ─────────────────────────────────────────────────────────
+# ── Pydantic スキーマ ──────────────────────────────────────────────────────────
 
 class SetupRequest(BaseModel):
     capital: int
-    current_amount: int
+    current_cash: int
     target_amount: int
-    deadline: str          # "YYYY-MM-DD"
-    stocks: list[str]      # ["7203.T", "6758.T"]
-    stock_names: dict[str, str] = {}  # {"7203.T": "トヨタ自動車"}
+    deadline: str  # "YYYY-MM-DD"
 
 
-class ResultRequest(BaseModel):
+class TradeResultRequest(BaseModel):
     proposal_id: int
-    pnl: int
-    memo: str = ""
-    amount_after: int
+    trades: list[dict]  # [{ticker, company_name, action, shares, price, pnl, memo}]
+    new_cash: int       # トレード後の現金残高
 
 
 # ── API ───────────────────────────────────────────────────────────────────────
@@ -85,32 +74,31 @@ def api_status(db: Session = Depends(get_db)):
     if not settings:
         return {"configured": False}
 
+    portfolio = get_portfolio(db)
+    portfolio_list = [
+        {"ticker": p.ticker, "company_name": p.company_name,
+         "shares": p.shares, "avg_price": p.avg_price}
+        for p in portfolio
+    ]
+
     latest = get_latest_proposal(db)
     today_str = date.today().isoformat()
     has_today = latest and str(latest.date) == today_str
 
-    stocks = json.loads(settings.stocks) if settings.stocks else []
-
-    # 残り日数
     deadline_date = settings.deadline
     remaining_days = (deadline_date - date.today()).days if deadline_date else None
 
-    # 進捗率
-    progress_pct = None
-    if settings.capital and settings.target_amount and settings.capital < settings.target_amount:
-        gained = (settings.current_amount or settings.capital) - settings.capital
-        needed = settings.target_amount - settings.capital
-        progress_pct = round(gained / needed * 100, 1)
+    total_pnl = get_total_pnl(db)
 
     return {
         "configured": True,
         "capital": settings.capital,
-        "current_amount": settings.current_amount,
+        "current_cash": settings.current_cash,
         "target_amount": settings.target_amount,
         "deadline": str(settings.deadline),
-        "stocks": stocks,
         "remaining_days": remaining_days,
-        "progress_pct": progress_pct,
+        "portfolio": portfolio_list,
+        "total_pnl": total_pnl,
         "has_today_proposal": bool(has_today),
         "latest_proposal_date": str(latest.date) if latest else None,
     }
@@ -118,13 +106,11 @@ def api_status(db: Session = Depends(get_db)):
 
 @app.post("/api/setup")
 def api_setup(req: SetupRequest, db: Session = Depends(get_db)):
-    deadline = date.fromisoformat(req.deadline)
     row = upsert_settings(db, {
         "capital": req.capital,
-        "current_amount": req.current_amount,
+        "current_cash": req.current_cash,
         "target_amount": req.target_amount,
-        "deadline": deadline,
-        "stocks": json.dumps(req.stocks, ensure_ascii=False),
+        "deadline": date.fromisoformat(req.deadline),
     })
     return {"ok": True, "id": row.id}
 
@@ -135,11 +121,6 @@ def api_generate(db: Session = Depends(get_db)):
     if not settings:
         raise HTTPException(status_code=400, detail="設定が未完了です。/api/setup を先に呼んでください。")
 
-    stocks = json.loads(settings.stocks) if settings.stocks else []
-    if not stocks:
-        raise HTTPException(status_code=400, detail="対象銘柄が設定されていません。")
-
-    # 今日すでに生成済みの場合はそちらを返す
     today = date.today()
     existing = get_proposal_by_date(db, today)
     if existing:
@@ -151,25 +132,30 @@ def api_generate(db: Session = Depends(get_db)):
             "confidence": existing.confidence,
         }
 
+    portfolio = get_portfolio(db)
+    portfolio_list = [
+        {"ticker": p.ticker, "company_name": p.company_name,
+         "shares": p.shares, "avg_price": p.avg_price}
+        for p in portfolio
+    ]
+
     settings_dict = {
         "capital": settings.capital,
-        "current_amount": settings.current_amount,
+        "current_cash": settings.current_cash,
         "target_amount": settings.target_amount,
         "deadline": str(settings.deadline),
-        "stocks": stocks,
-        "stock_names": {},
     }
 
     try:
-        result = generate_proposal(settings_dict)
+        result = generate_proposal(settings_dict, portfolio_list)
     except Exception as e:
         logger.error(f"提案生成エラー: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-    # DB保存
     proposal = save_proposal(db, {
         "date": today,
         "raw_data": json.dumps(result["raw_data"], ensure_ascii=False),
+        "screening_result": result["screening_result"],
         "bull_analysis": result["bull_analysis"],
         "bear_analysis": result["bear_analysis"],
         "risk_analysis": result["risk_analysis"],
@@ -188,8 +174,7 @@ def api_generate(db: Session = Depends(get_db)):
 
 @app.get("/api/proposal/today")
 def api_proposal_today(db: Session = Depends(get_db)):
-    today = date.today()
-    proposal = get_proposal_by_date(db, today)
+    proposal = get_proposal_by_date(db, date.today())
     if not proposal:
         return {"found": False}
     return {
@@ -197,6 +182,7 @@ def api_proposal_today(db: Session = Depends(get_db)):
         "id": proposal.id,
         "date": str(proposal.date),
         "final_proposal": proposal.final_proposal,
+        "screening_result": proposal.screening_result,
         "bull_analysis": proposal.bull_analysis,
         "bear_analysis": proposal.bear_analysis,
         "risk_analysis": proposal.risk_analysis,
@@ -206,42 +192,61 @@ def api_proposal_today(db: Session = Depends(get_db)):
 
 
 @app.post("/api/result")
-def api_result(req: ResultRequest, db: Session = Depends(get_db)):
-    settings = get_settings(db)
-    row = save_result(db, {
-        "date": date.today(),
-        "proposal_id": req.proposal_id,
-        "pnl": req.pnl,
-        "memo": req.memo,
-        "amount_after": req.amount_after,
-    })
-    # 現在資産を更新
-    if settings:
-        upsert_settings(db, {"current_amount": req.amount_after})
+def api_result(req: TradeResultRequest, db: Session = Depends(get_db)):
+    # トレード結果を記録
+    for trade in req.trades:
+        save_trade_result(db, {
+            "date": date.today(),
+            "proposal_id": req.proposal_id,
+            "ticker": trade.get("ticker"),
+            "company_name": trade.get("company_name"),
+            "action": trade.get("action"),
+            "shares": trade.get("shares"),
+            "price": trade.get("price"),
+            "pnl": trade.get("pnl"),
+            "memo": trade.get("memo", ""),
+        })
+        # ポートフォリオを更新
+        action = trade.get("action")
+        ticker = trade.get("ticker")
+        shares = trade.get("shares", 0)
+        price = trade.get("price", 0)
+        if action == "buy" and ticker and shares and price:
+            add_position(db, ticker, trade.get("company_name", ""), shares, price)
+        elif action == "sell" and ticker and shares:
+            reduce_position(db, ticker, shares)
 
-    return {"ok": True, "id": row.id}
+    # 現金残高を更新
+    upsert_settings(db, {"current_cash": req.new_cash})
+
+    return {"ok": True}
 
 
 @app.get("/api/history")
 def api_history(db: Session = Depends(get_db)):
     proposals = list_proposals(db, limit=30)
-    results = list_results(db, limit=30)
+    trades = list_trade_results(db, limit=90)
 
-    results_by_proposal = {}
-    for r in results:
-        results_by_proposal[r.proposal_id] = r
+    trades_by_proposal: dict[int, list] = {}
+    for t in trades:
+        trades_by_proposal.setdefault(t.proposal_id, []).append(t)
 
     history = []
     for p in proposals:
-        r = results_by_proposal.get(p.id)
+        t_list = trades_by_proposal.get(p.id, [])
+        day_pnl = sum(t.pnl for t in t_list if t.pnl)
         history.append({
             "date": str(p.date),
             "proposal_id": p.id,
             "final_proposal": p.final_proposal,
             "confidence": p.confidence,
-            "pnl": r.pnl if r else None,
-            "amount_after": r.amount_after if r else None,
-            "memo": r.memo if r else None,
+            "trades": [
+                {"ticker": t.ticker, "company_name": t.company_name,
+                 "action": t.action, "shares": t.shares,
+                 "price": t.price, "pnl": t.pnl}
+                for t in t_list
+            ],
+            "day_pnl": day_pnl,
         })
 
     return {"history": history}

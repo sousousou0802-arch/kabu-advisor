@@ -1,24 +1,30 @@
 """
 マルチエージェント議論エンジン
-Step2〜5: bull → bear → risk → moderator の順で分析・統合する
+Step1: 市場スクリーニング
+Step2: 強気アナリスト
+Step3: 弱気アナリスト
+Step4: リスク管理官
+Step5: モデレーター統合
 """
 
 import json
 import logging
 import os
 import re
-from datetime import date, datetime
+from datetime import date
 from typing import Optional
 
 import anthropic
 
-from advisor.data import collect_all_data
+from advisor.data import collect_stock_data, get_market_news_rss
 from advisor.prompts import (
+    SCREENER_SYSTEM, SCREENER_USER_TEMPLATE,
     BULL_SYSTEM, BULL_USER_TEMPLATE,
     BEAR_SYSTEM, BEAR_USER_TEMPLATE,
     RISK_SYSTEM, RISK_USER_TEMPLATE,
     MODERATOR_SYSTEM, MODERATOR_USER_TEMPLATE,
-    build_search_queries,
+    build_market_search_queries,
+    build_stock_search_queries,
 )
 
 logger = logging.getLogger(__name__)
@@ -31,25 +37,16 @@ def _get_client() -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 
-# ── web_search でデータを補強 ────────────────────────────────────────────────
+# ── web_search ───────────────────────────────────────────────────────────────
 
-def _web_search_supplement(
-    client: anthropic.Anthropic,
-    queries: list[str],
-) -> str:
-    """
-    Claude の web_search ツールを使って検索結果を収集し、テキストにまとめる。
-    """
+def _web_search(client: anthropic.Anthropic, queries: list[str], max_uses: int = 8) -> str:
     tool_def = {
         "type": "web_search_20250305",
         "name": "web_search",
-        "max_uses": len(queries),
+        "max_uses": min(max_uses, len(queries)),
     }
-
-    # クエリをまとめて1回のAPI呼び出しで検索させる
     query_list = "\n".join(f"- {q}" for q in queries)
-    prompt = f"""以下のクエリで順番にウェブ検索を行い、各結果の要点をまとめてください。
-投資判断に役立つ数値・事実・最新情報を優先してください。
+    prompt = f"""以下のクエリで順番にウェブ検索し、投資判断に役立つ数値・事実・最新情報をまとめてください。
 
 {query_list}
 """
@@ -60,7 +57,6 @@ def _web_search_supplement(
             tools=[tool_def],
             messages=[{"role": "user", "content": prompt}],
         )
-        # テキストブロックを結合
         texts = [b.text for b in response.content if hasattr(b, "text")]
         return "\n\n".join(texts)
     except Exception as e:
@@ -68,14 +64,9 @@ def _web_search_supplement(
         return f"（web_search失敗: {e}）"
 
 
-# ── 各エージェント呼び出し ──────────────────────────────────────────────────
+# ── エージェント呼び出し ──────────────────────────────────────────────────────
 
-def _call_agent(
-    client: anthropic.Anthropic,
-    system: str,
-    user: str,
-) -> str:
-    """シンプルなエージェント呼び出し"""
+def _call_agent(client: anthropic.Anthropic, system: str, user: str) -> str:
     response = client.messages.create(
         model=MODEL,
         max_tokens=MAX_TOKENS,
@@ -85,181 +76,201 @@ def _call_agent(
     return response.content[0].text
 
 
-def run_bull_agent(client: anthropic.Anthropic, context: str, data: str) -> str:
-    logger.info("強気アナリスト分析開始")
-    user = BULL_USER_TEMPLATE.format(context=context, data=data)
-    return _call_agent(client, BULL_SYSTEM, user)
+# ── ポートフォリオサマリー生成 ───────────────────────────────────────────────
 
-
-def run_bear_agent(client: anthropic.Anthropic, context: str, data: str) -> str:
-    logger.info("弱気アナリスト分析開始")
-    user = BEAR_USER_TEMPLATE.format(context=context, data=data)
-    return _call_agent(client, BEAR_SYSTEM, user)
-
-
-def run_risk_agent(
-    client: anthropic.Anthropic,
-    capital: int,
-    current_amount: int,
-    target_amount: int,
-    deadline: str,
-    today: str,
-    data_summary: str,
-) -> str:
-    logger.info("リスク管理官分析開始")
-    user = RISK_USER_TEMPLATE.format(
-        capital=capital,
-        current_amount=current_amount,
-        target_amount=target_amount,
-        deadline=deadline,
-        today=today,
-        data_summary=data_summary,
-    )
-    return _call_agent(client, RISK_SYSTEM, user)
-
-
-def run_moderator_agent(
-    client: anthropic.Anthropic,
-    current_amount: int,
-    target_amount: int,
-    deadline: str,
-    bull_analysis: str,
-    bear_analysis: str,
-    risk_analysis: str,
-) -> str:
-    logger.info("モデレーター統合分析開始")
-    user = MODERATOR_USER_TEMPLATE.format(
-        current_amount=current_amount,
-        target_amount=target_amount,
-        deadline=deadline,
-        bull_analysis=bull_analysis,
-        bear_analysis=bear_analysis,
-        risk_analysis=risk_analysis,
-    )
-    return _call_agent(client, MODERATOR_SYSTEM, user)
-
-
-# ── 自信度パース ────────────────────────────────────────────────────────────
-
-def _extract_confidence(final_proposal: str) -> int:
-    """モデレーター出力から自信度(%)を抽出する"""
-    m = re.search(r"自信度.*?(\d{1,3})\s*%", final_proposal)
-    if m:
-        return int(m.group(1))
-    return 50  # デフォルト
-
-
-# ── データサマリー生成 ──────────────────────────────────────────────────────
-
-def _build_data_summary(raw_data: dict) -> str:
-    """raw_dataから簡潔なテキストサマリーを生成する（リスク管理官向け）"""
+def _portfolio_summary(portfolio: list[dict], stock_data: dict) -> str:
+    if not portfolio:
+        return "なし（初日）"
     lines = []
-    for ticker, stock_data in raw_data.get("stocks", {}).items():
-        tech = stock_data.get("technical", {})
-        lines.append(f"[{ticker}]")
-        lines.append(f"  現在株価: {tech.get('current_price')}円")
-        lines.append(f"  前日比: {tech.get('price_change_pct')}%")
-        lines.append(f"  RSI14: {tech.get('rsi14')}")
-        macd = tech.get("macd", {})
-        lines.append(f"  MACD: {macd.get('macd')} / Signal: {macd.get('signal')}")
-        lines.append(f"  出来高MA比: {tech.get('volume_ma20_ratio')}")
-    return "\n".join(lines) if lines else "データなし"
+    for p in portfolio:
+        ticker = p["ticker"]
+        current = stock_data.get("stocks", {}).get(ticker, {}).get("technical", {}).get("current_price")
+        avg = p["avg_price"]
+        shares = p["shares"]
+        if current:
+            pnl_pct = round((current - avg) / avg * 100, 2)
+            pnl_yen = int((current - avg) * shares)
+            lines.append(
+                f"- {ticker}({p.get('company_name', '')}) "
+                f"{shares}株 @{avg:.0f}円 → 現在{current:.0f}円 "
+                f"({'+' if pnl_pct >= 0 else ''}{pnl_pct}%, {'+' if pnl_yen >= 0 else ''}{pnl_yen:,}円)"
+            )
+        else:
+            lines.append(f"- {ticker}({p.get('company_name', '')}) {shares}株 @{avg:.0f}円")
+    return "\n".join(lines)
 
 
-# ── メインエントリポイント ──────────────────────────────────────────────────
+def _stock_value(portfolio: list[dict], stock_data: dict) -> int:
+    total = 0
+    for p in portfolio:
+        ticker = p["ticker"]
+        current = stock_data.get("stocks", {}).get(ticker, {}).get("technical", {}).get("current_price")
+        price = current if current else p["avg_price"]
+        total += int(price * p["shares"])
+    return total
 
-def generate_proposal(settings: dict) -> dict:
+
+# ── 候補銘柄をスクリーニング結果からパース ─────────────────────────────────
+
+def _parse_candidates(screening_text: str) -> list[str]:
+    """スクリーニング結果からティッカーコードを抽出する"""
+    pattern = r'\b(\d{4})\.T\b'
+    tickers = re.findall(pattern, screening_text)
+    return [f"{t}.T" for t in dict.fromkeys(tickers)]  # 重複除去・順序保持
+
+
+# ── 自信度パース ──────────────────────────────────────────────────────────────
+
+def _extract_confidence(text: str) -> int:
+    m = re.search(r"自信度.*?(\d{1,3})\s*%", text)
+    return int(m.group(1)) if m else 50
+
+
+# ── メインエントリポイント ────────────────────────────────────────────────────
+
+def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
     """
-    マルチエージェント議論を実行し、最終提案を返す。
+    マルチエージェント議論を実行し最終提案を返す。
 
     Args:
-        settings: {
-            "capital": 1000000,
-            "current_amount": 1050000,
-            "target_amount": 1500000,
-            "deadline": "2025-12-31",
-            "stocks": ["7203.T", "6758.T"],
-            "stock_names": {"7203.T": "トヨタ自動車", "6758.T": "ソニーグループ"},
-        }
+        settings: {capital, current_cash, target_amount, deadline}
+        portfolio: [{ticker, company_name, shares, avg_price}, ...]
 
     Returns:
-        {
-            "raw_data": {...},
-            "web_search_result": "...",
-            "bull_analysis": "...",
-            "bear_analysis": "...",
-            "risk_analysis": "...",
-            "final_proposal": "...",
-            "confidence": 72,
-        }
+        {screening_result, bull_analysis, bear_analysis, risk_analysis,
+         final_proposal, confidence, raw_data}
     """
     client = _get_client()
-    tickers: list[str] = settings["stocks"]
-    stock_names: dict = settings.get("stock_names", {})
     today_str = date.today().isoformat()
 
-    # ── Step 1: データ収集 ──────────────────────────────────────────────────
-    logger.info("Step1: データ収集開始")
-    raw_data = collect_all_data(tickers)
+    remaining_days = (date.fromisoformat(str(settings["deadline"])) - date.today()).days
+    current_cash = settings["current_cash"]
+    target_amount = settings["target_amount"]
+    capital = settings["capital"]
 
-    # web_search クエリ組み立て
-    queries = []
-    for ticker in tickers:
-        company = stock_names.get(ticker, ticker)
-        queries.extend(build_search_queries(company, ticker.replace(".T", "")))
-    # 重複排除・最大15クエリ
-    queries = list(dict.fromkeys(queries))[:15]
+    # ── Step 1a: 市場情報をweb_searchで収集 ──────────────────────────────────
+    logger.info("Step1: 市場情報web_search")
+    market_queries = build_market_search_queries()
+    market_info = _web_search(client, market_queries, max_uses=7)
 
-    logger.info(f"Step1: web_search ({len(queries)}クエリ)")
-    web_search_result = _web_search_supplement(client, queries)
-    raw_data["web_search"] = web_search_result
+    # RSS市場ニュース
+    rss_news = get_market_news_rss()
+    rss_text = "\n".join(f"- {n['title']}: {n['summary']}" for n in rss_news)
 
-    # エージェントに渡すデータテキスト
-    data_text = json.dumps(raw_data, ensure_ascii=False, indent=2)
+    full_market_info = f"{market_info}\n\n## Yahoo!ファイナンスRSSニュース\n{rss_text}"
+
+    # ── Step 1b: スクリーナーエージェント ────────────────────────────────────
+    logger.info("Step1b: スクリーナー実行")
+    portfolio_summary_text = _portfolio_summary(portfolio, {"stocks": {}})
+
+    screener_user = SCREENER_USER_TEMPLATE.format(
+        available_cash=current_cash,
+        target_amount=target_amount,
+        deadline=settings["deadline"],
+        remaining_days=remaining_days,
+        portfolio_summary=portfolio_summary_text,
+        market_info=full_market_info,
+    )
+    screening_result = _call_agent(client, SCREENER_SYSTEM, screener_user)
+
+    # 候補銘柄を抽出してデータ収集
+    candidate_tickers = _parse_candidates(screening_result)
+    # 保有銘柄も含める
+    held_tickers = [p["ticker"] for p in portfolio]
+    all_tickers = list(dict.fromkeys(candidate_tickers + held_tickers))
+
+    logger.info(f"候補銘柄: {all_tickers}")
+
+    # ── Step 1c: 候補銘柄の株価・ニュースを収集 ──────────────────────────────
+    raw_data = collect_stock_data(all_tickers)
+
+    # 候補銘柄の個別web_search
+    for ticker in candidate_tickers[:3]:  # 上位3銘柄のみ（API節約）
+        code = ticker.replace(".T", "")
+        # スクリーニング結果から会社名を推測
+        company = code  # フォールバック
+        queries = build_stock_search_queries(code, company)
+        stock_search = _web_search(client, queries, max_uses=3)
+        if ticker in raw_data["stocks"]:
+            raw_data["stocks"][ticker]["web_search"] = stock_search
+
+    # ポートフォリオサマリー（株価データ込み）
+    portfolio_summary_text = _portfolio_summary(portfolio, raw_data)
+    sv = _stock_value(portfolio, raw_data)
+    total_assets = current_cash + sv
+
+    candidates_text = screening_result
     context_text = (
-        f"対象銘柄: {', '.join(f'{t}({stock_names.get(t, t)})' for t in tickers)}\n"
-        f"現在資産: {settings['current_amount']:,}円\n"
-        f"目標金額: {settings['target_amount']:,}円\n"
-        f"期日: {settings['deadline']}\n"
+        f"現在の現金: {current_cash:,}円\n"
+        f"保有株式評価額: {sv:,}円\n"
+        f"合計資産: {total_assets:,}円\n"
+        f"目標金額: {target_amount:,}円\n"
+        f"期日: {settings['deadline']}（残り{remaining_days}日）\n"
         f"今日: {today_str}"
     )
-    data_summary = _build_data_summary(raw_data)
+    data_text = json.dumps(raw_data, ensure_ascii=False, indent=2)
 
-    # ── Step 2: 強気アナリスト ──────────────────────────────────────────────
-    bull_analysis = run_bull_agent(client, context_text, data_text)
-
-    # ── Step 3: 弱気アナリスト ──────────────────────────────────────────────
-    bear_analysis = run_bear_agent(client, context_text, data_text)
-
-    # ── Step 4: リスク管理官 ────────────────────────────────────────────────
-    risk_analysis = run_risk_agent(
-        client,
-        capital=settings["capital"],
-        current_amount=settings["current_amount"],
-        target_amount=settings["target_amount"],
-        deadline=settings["deadline"],
-        today=today_str,
-        data_summary=data_summary,
+    # ── Step 2: 強気アナリスト ────────────────────────────────────────────────
+    logger.info("Step2: 強気アナリスト")
+    bull_analysis = _call_agent(
+        client, BULL_SYSTEM,
+        BULL_USER_TEMPLATE.format(
+            candidates=candidates_text,
+            context=context_text,
+            data=data_text,
+        )
     )
 
-    # ── Step 5: モデレーター統合 ────────────────────────────────────────────
-    final_proposal = run_moderator_agent(
-        client,
-        current_amount=settings["current_amount"],
-        target_amount=settings["target_amount"],
-        deadline=settings["deadline"],
-        bull_analysis=bull_analysis,
-        bear_analysis=bear_analysis,
-        risk_analysis=risk_analysis,
+    # ── Step 3: 弱気アナリスト ────────────────────────────────────────────────
+    logger.info("Step3: 弱気アナリスト")
+    bear_analysis = _call_agent(
+        client, BEAR_SYSTEM,
+        BEAR_USER_TEMPLATE.format(
+            candidates=candidates_text,
+            context=context_text,
+            data=data_text,
+        )
+    )
+
+    # ── Step 4: リスク管理官 ──────────────────────────────────────────────────
+    logger.info("Step4: リスク管理官")
+    risk_analysis = _call_agent(
+        client, RISK_SYSTEM,
+        RISK_USER_TEMPLATE.format(
+            capital=capital,
+            current_cash=current_cash,
+            stock_value=sv,
+            total_assets=total_assets,
+            target_amount=target_amount,
+            deadline=settings["deadline"],
+            remaining_days=remaining_days,
+            candidates=candidates_text,
+            portfolio_summary=portfolio_summary_text,
+        )
+    )
+
+    # ── Step 5: モデレーター ──────────────────────────────────────────────────
+    logger.info("Step5: モデレーター統合")
+    final_proposal = _call_agent(
+        client, MODERATOR_SYSTEM,
+        MODERATOR_USER_TEMPLATE.format(
+            current_cash=current_cash,
+            target_amount=target_amount,
+            deadline=settings["deadline"],
+            portfolio_summary=portfolio_summary_text,
+            screening_result=screening_result,
+            bull_analysis=bull_analysis,
+            bear_analysis=bear_analysis,
+            risk_analysis=risk_analysis,
+        )
     )
 
     confidence = _extract_confidence(final_proposal)
-
     logger.info(f"提案生成完了 (自信度: {confidence}%)")
 
     return {
         "raw_data": raw_data,
-        "web_search_result": web_search_result,
+        "screening_result": screening_result,
         "bull_analysis": bull_analysis,
         "bear_analysis": bear_analysis,
         "risk_analysis": risk_analysis,
