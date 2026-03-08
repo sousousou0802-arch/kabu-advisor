@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <title>kabu-advisor</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #22263a;
+      --border: #2e3248;
+      --accent: #4f8ef7;
+      --accent2: #7c5cbf;
+      --green: #34d399;
+      --red: #f87171;
+      --yellow: #fbbf24;
+      --text: #e2e8f0;
+      --text2: #94a3b8;
+      --radius: 12px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+      min-height: 100vh;
+    }
+    #app { max-width: 480px; margin: 0 auto; padding: 0 0 80px; }
+
+    /* ── ヘッダー ── */
+    .header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 16px;
+      position: sticky; top: 0; z-index: 10;
+    }
+    .header-top { display: flex; justify-content: space-between; align-items: center; }
+    .header-title { font-size: 18px; font-weight: 700; color: var(--accent); }
+    .header-date { color: var(--text2); font-size: 12px; }
+    .asset-row { margin-top: 12px; display: flex; gap: 12px; }
+    .asset-box {
+      flex: 1; background: var(--surface2); border-radius: 8px; padding: 10px;
+      text-align: center;
+    }
+    .asset-label { font-size: 10px; color: var(--text2); margin-bottom: 4px; }
+    .asset-value { font-size: 16px; font-weight: 700; }
+    .asset-value.green { color: var(--green); }
+    .asset-value.yellow { color: var(--yellow); }
+    .progress-wrap { margin-top: 10px; }
+    .progress-label {
+      display: flex; justify-content: space-between;
+      font-size: 11px; color: var(--text2); margin-bottom: 4px;
+    }
+    .progress-bar { background: var(--surface2); border-radius: 4px; height: 6px; overflow: hidden; }
+    .progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 4px; transition: width .5s; }
+
+    /* ── タブ ── */
+    .tabs { display: flex; background: var(--surface); border-bottom: 1px solid var(--border); }
+    .tab-btn {
+      flex: 1; padding: 12px 4px; text-align: center; font-size: 12px;
+      color: var(--text2); background: none; border: none; cursor: pointer;
+      border-bottom: 2px solid transparent;
+    }
+    .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
+    /* ── タブコンテンツ ── */
+    .tab-content { display: none; padding: 16px; }
+    .tab-content.active { display: block; }
+
+    /* ── ボタン ── */
+    .btn {
+      width: 100%; padding: 14px; border: none; border-radius: var(--radius);
+      font-size: 15px; font-weight: 700; cursor: pointer; transition: opacity .2s;
+    }
+    .btn:disabled { opacity: .4; cursor: not-allowed; }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-success { background: var(--green); color: #0f1117; }
+    .btn-danger { background: var(--red); color: #fff; }
+    .btn:active:not(:disabled) { opacity: .8; }
+
+    /* ── カード ── */
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 16px; margin-bottom: 12px;
+    }
+    .card-title { font-size: 13px; font-weight: 700; color: var(--accent); margin-bottom: 10px; }
+
+    /* ── 最終提案 ── */
+    .proposal-box {
+      background: var(--surface2); border-radius: var(--radius);
+      padding: 16px; white-space: pre-wrap; line-height: 1.7;
+      font-size: 13px; color: var(--text);
+    }
+    .confidence-badge {
+      display: inline-block; padding: 4px 10px;
+      border-radius: 20px; font-size: 12px; font-weight: 700;
+      margin-bottom: 12px;
+    }
+    .confidence-high { background: rgba(52,211,153,.2); color: var(--green); }
+    .confidence-mid  { background: rgba(251,191,36,.2); color: var(--yellow); }
+    .confidence-low  { background: rgba(248,113,113,.2); color: var(--red); }
+
+    /* ── 折りたたみ ── */
+    .collapsible { margin-bottom: 8px; }
+    .collapsible-header {
+      display: flex; justify-content: space-between; align-items: center;
+      background: var(--surface2); border-radius: 8px;
+      padding: 12px; cursor: pointer; user-select: none;
+    }
+    .collapsible-header span { font-size: 13px; font-weight: 600; }
+    .collapsible-arrow { transition: transform .2s; font-size: 12px; color: var(--text2); }
+    .collapsible.open .collapsible-arrow { transform: rotate(180deg); }
+    .collapsible-body {
+      display: none; background: var(--surface2); border-radius: 0 0 8px 8px;
+      padding: 12px; white-space: pre-wrap; font-size: 12px;
+      line-height: 1.7; color: var(--text2);
+    }
+    .collapsible.open .collapsible-body { display: block; }
+
+    /* ── フォーム ── */
+    .form-group { margin-bottom: 14px; }
+    .form-label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 6px; }
+    .form-input {
+      width: 100%; padding: 10px 12px; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 8px;
+      color: var(--text); font-size: 14px; outline: none;
+    }
+    .form-input:focus { border-color: var(--accent); }
+    .form-row { display: flex; gap: 8px; }
+    .form-row .form-group { flex: 1; }
+
+    /* ── ステータス ── */
+    .status-msg {
+      text-align: center; padding: 16px; color: var(--text2); font-size: 13px;
+    }
+    .spinner {
+      display: inline-block; width: 20px; height: 20px;
+      border: 2px solid var(--border); border-top-color: var(--accent);
+      border-radius: 50%; animation: spin .7s linear infinite; vertical-align: middle;
+      margin-right: 8px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── 履歴 ── */
+    .history-item {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 12px; margin-bottom: 10px;
+    }
+    .history-header { display: flex; justify-content: space-between; margin-bottom: 6px; }
+    .history-date { font-weight: 700; font-size: 13px; }
+    .pnl-positive { color: var(--red); font-weight: 700; }   /* 日本式: 上がり=赤 */
+    .pnl-negative { color: var(--green); font-weight: 700; }
+    .pnl-zero     { color: var(--text2); }
+    .history-preview { font-size: 12px; color: var(--text2); line-height: 1.5; }
+
+    /* ── 設定 ── */
+    .stocks-list { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+    .stock-tag {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 20px; padding: 4px 10px; font-size: 12px;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .stock-remove { cursor: pointer; color: var(--red); font-size: 14px; line-height: 1; }
+    .add-stock-row { display: flex; gap: 8px; }
+    .add-stock-row .form-input { flex: 1; }
+    .add-stock-row .btn { width: auto; padding: 10px 16px; font-size: 13px; }
+
+    /* ── トースト ── */
+    #toast {
+      position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%);
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 20px; font-size: 13px;
+      opacity: 0; transition: opacity .3s; pointer-events: none; z-index: 100;
+      white-space: nowrap;
+    }
+    #toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ヘッダー -->
+  <div class="header">
+    <div class="header-top">
+      <div class="header-title">kabu-advisor</div>
+      <div class="header-date" id="hdr-date">読み込み中...</div>
+    </div>
+    <div class="asset-row">
+      <div class="asset-box">
+        <div class="asset-label">現在資産</div>
+        <div class="asset-value green" id="hdr-current">---</div>
+      </div>
+      <div class="asset-box">
+        <div class="asset-label">目標金額</div>
+        <div class="asset-value yellow" id="hdr-target">---</div>
+      </div>
+      <div class="asset-box">
+        <div class="asset-label">残り日数</div>
+        <div class="asset-value" id="hdr-days">---</div>
+      </div>
+    </div>
+    <div class="progress-wrap">
+      <div class="progress-label">
+        <span>進捗</span>
+        <span id="hdr-progress-pct">--%</span>
+      </div>
+      <div class="progress-bar">
+        <div class="progress-fill" id="hdr-progress-fill" style="width:0%"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- タブ -->
+  <div class="tabs">
+    <button class="tab-btn active" onclick="showTab('today')">今日</button>
+    <button class="tab-btn" onclick="showTab('detail')">議論詳細</button>
+    <button class="tab-btn" onclick="showTab('history')">履歴</button>
+    <button class="tab-btn" onclick="showTab('settings')">設定</button>
+  </div>
+
+  <!-- 今日タブ -->
+  <div id="tab-today" class="tab-content active">
+    <div id="today-not-configured" class="status-msg" style="display:none">
+      設定タブから初期設定を行ってください。
+    </div>
+    <div id="today-main" style="display:none">
+      <div class="card">
+        <div id="today-status-msg" class="status-msg" style="display:none"></div>
+        <button class="btn btn-primary" id="btn-generate" onclick="generateProposal()">
+          今日の打ち手を生成
+        </button>
+        <p style="font-size:11px;color:var(--text2);text-align:center;margin-top:8px;">
+          ※ Claude APIを4〜5回呼び出します（数分かかります）
+        </p>
+      </div>
+
+      <div id="proposal-area" style="display:none">
+        <div class="card">
+          <div class="card-title">最終提案</div>
+          <div id="confidence-badge" class="confidence-badge"></div>
+          <div id="final-proposal" class="proposal-box"></div>
+        </div>
+
+        <!-- 結果記録 -->
+        <div class="card" id="result-form-card">
+          <div class="card-title">結果を記録</div>
+          <input type="hidden" id="result-proposal-id" />
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">損益（円）</label>
+              <input class="form-input" id="inp-pnl" type="number" placeholder="例: 5000 or -3000" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">取引後資産（円）</label>
+              <input class="form-input" id="inp-amount-after" type="number" placeholder="例: 1055000" />
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">メモ</label>
+            <input class="form-input" id="inp-memo" type="text" placeholder="例: 指値で買えず" />
+          </div>
+          <button class="btn btn-success" onclick="saveResult()">結果を保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 議論詳細タブ -->
+  <div id="tab-detail" class="tab-content">
+    <div id="detail-empty" class="status-msg">今日の提案を先に生成してください。</div>
+    <div id="detail-content" style="display:none">
+      <div class="collapsible" id="col-bull">
+        <div class="collapsible-header" onclick="toggleCollapsible('col-bull')">
+          <span>強気アナリスト分析</span>
+          <span class="collapsible-arrow">▼</span>
+        </div>
+        <div class="collapsible-body" id="col-bull-body"></div>
+      </div>
+      <div class="collapsible" id="col-bear">
+        <div class="collapsible-header" onclick="toggleCollapsible('col-bear')">
+          <span>弱気アナリスト分析</span>
+          <span class="collapsible-arrow">▼</span>
+        </div>
+        <div class="collapsible-body" id="col-bear-body"></div>
+      </div>
+      <div class="collapsible" id="col-risk">
+        <div class="collapsible-header" onclick="toggleCollapsible('col-risk')">
+          <span>リスク管理官分析</span>
+          <span class="collapsible-arrow">▼</span>
+        </div>
+        <div class="collapsible-body" id="col-risk-body"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 履歴タブ -->
+  <div id="tab-history" class="tab-content">
+    <div id="history-list"><div class="status-msg">読み込み中...</div></div>
+  </div>
+
+  <!-- 設定タブ -->
+  <div id="tab-settings" class="tab-content">
+    <div class="card">
+      <div class="card-title">投資目標</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">元手（円）</label>
+          <input class="form-input" id="set-capital" type="number" placeholder="1000000" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">現在資産（円）</label>
+          <input class="form-input" id="set-current" type="number" placeholder="1050000" />
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">目標金額（円）</label>
+          <input class="form-input" id="set-target" type="number" placeholder="1500000" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">期日</label>
+          <input class="form-input" id="set-deadline" type="date" />
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">対象銘柄</div>
+      <div class="stocks-list" id="stocks-list"></div>
+      <div class="add-stock-row">
+        <input class="form-input" id="inp-ticker" type="text" placeholder="7203.T" />
+        <input class="form-input" id="inp-name" type="text" placeholder="トヨタ自動車" style="flex:1.5" />
+        <button class="btn btn-primary" onclick="addStock()">追加</button>
+      </div>
+    </div>
+    <button class="btn btn-primary" onclick="saveSettings()" style="margin-top:4px">設定を保存</button>
+  </div>
+
+</div><!-- /app -->
+
+<div id="toast"></div>
+
+<script>
+// ── 状態 ─────────────────────────────────────────────────────────────────
+let state = {
+  configured: false,
+  stocks: [],
+  stockNames: {},
+};
+
+// ── 初期化 ────────────────────────────────────────────────────────────────
+(async function init() {
+  const today = new Date();
+  document.getElementById('hdr-date').textContent =
+    today.toLocaleDateString('ja-JP', {month:'long', day:'numeric', weekday:'short'});
+
+  await loadStatus();
+  await loadTodayProposal();
+  await loadHistory();
+})();
+
+// ── タブ ──────────────────────────────────────────────────────────────────
+function showTab(name) {
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  event.currentTarget.classList.add('active');
+  if (name === 'history') loadHistory();
+}
+
+// ── ステータス読み込み ─────────────────────────────────────────────────────
+async function loadStatus() {
+  try {
+    const res = await fetch('/api/status');
+    const data = await res.json();
+
+    if (!data.configured) {
+      document.getElementById('today-not-configured').style.display = 'block';
+      document.getElementById('today-main').style.display = 'none';
+      populateSettings({});
+      return;
+    }
+
+    state.configured = true;
+    state.stocks = data.stocks || [];
+
+    document.getElementById('today-not-configured').style.display = 'none';
+    document.getElementById('today-main').style.display = 'block';
+
+    document.getElementById('hdr-current').textContent = fmt(data.current_amount);
+    document.getElementById('hdr-target').textContent = fmt(data.target_amount);
+    document.getElementById('hdr-days').textContent = data.remaining_days != null ? data.remaining_days + '日' : '---';
+
+    const pct = data.progress_pct ?? 0;
+    document.getElementById('hdr-progress-pct').textContent = pct + '%';
+    document.getElementById('hdr-progress-fill').style.width = Math.min(pct, 100) + '%';
+
+    populateSettings(data);
+  } catch(e) {
+    console.error(e);
+  }
+}
+
+// ── 今日の提案を読み込む ──────────────────────────────────────────────────
+async function loadTodayProposal() {
+  try {
+    const res = await fetch('/api/proposal/today');
+    const data = await res.json();
+    if (data.found) {
+      displayProposal(data);
+    }
+  } catch(e) {}
+}
+
+// ── 提案を生成 ────────────────────────────────────────────────────────────
+async function generateProposal() {
+  const btn = document.getElementById('btn-generate');
+  const msg = document.getElementById('today-status-msg');
+
+  btn.disabled = true;
+  msg.style.display = 'block';
+  msg.innerHTML = '<span class="spinner"></span>分析中です（数分かかります）...';
+
+  try {
+    const res = await fetch('/api/generate', { method: 'POST' });
+    const data = await res.json();
+
+    if (!res.ok) {
+      msg.textContent = 'エラー: ' + (data.detail || '不明なエラー');
+      btn.disabled = false;
+      return;
+    }
+
+    msg.style.display = 'none';
+    btn.textContent = '今日の打ち手（生成済み）';
+
+    // 詳細を取得して表示
+    const detail = await fetch('/api/proposal/today').then(r => r.json());
+    if (detail.found) displayProposal(detail);
+
+  } catch(e) {
+    msg.textContent = 'エラー: ' + e.message;
+    btn.disabled = false;
+  }
+}
+
+// ── 提案を画面に表示 ──────────────────────────────────────────────────────
+function displayProposal(data) {
+  document.getElementById('proposal-area').style.display = 'block';
+  document.getElementById('result-proposal-id').value = data.id;
+  document.getElementById('btn-generate').textContent = '今日の打ち手（生成済み）';
+  document.getElementById('today-status-msg').style.display = 'none';
+
+  const conf = data.confidence || 50;
+  const badge = document.getElementById('confidence-badge');
+  badge.textContent = `自信度: ${conf}%`;
+  badge.className = 'confidence-badge ' + (conf >= 70 ? 'confidence-high' : conf >= 50 ? 'confidence-mid' : 'confidence-low');
+
+  document.getElementById('final-proposal').textContent = data.final_proposal || '';
+
+  // 議論詳細
+  if (data.bull_analysis || data.bear_analysis || data.risk_analysis) {
+    document.getElementById('detail-empty').style.display = 'none';
+    document.getElementById('detail-content').style.display = 'block';
+    document.getElementById('col-bull-body').textContent = data.bull_analysis || '';
+    document.getElementById('col-bear-body').textContent = data.bear_analysis || '';
+    document.getElementById('col-risk-body').textContent = data.risk_analysis || '';
+  }
+}
+
+// ── 結果保存 ──────────────────────────────────────────────────────────────
+async function saveResult() {
+  const proposalId = document.getElementById('result-proposal-id').value;
+  const pnl = parseInt(document.getElementById('inp-pnl').value);
+  const amountAfter = parseInt(document.getElementById('inp-amount-after').value);
+  const memo = document.getElementById('inp-memo').value;
+
+  if (!proposalId || isNaN(pnl) || isNaN(amountAfter)) {
+    toast('損益と取引後資産を入力してください');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/result', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ proposal_id: +proposalId, pnl, amount_after: amountAfter, memo }),
+    });
+    if (res.ok) {
+      toast('結果を保存しました');
+      document.getElementById('result-form-card').style.display = 'none';
+      await loadStatus();
+    }
+  } catch(e) {
+    toast('保存エラー: ' + e.message);
+  }
+}
+
+// ── 履歴読み込み ──────────────────────────────────────────────────────────
+async function loadHistory() {
+  try {
+    const res = await fetch('/api/history');
+    const data = await res.json();
+    const list = document.getElementById('history-list');
+
+    if (!data.history || data.history.length === 0) {
+      list.innerHTML = '<div class="status-msg">履歴がありません</div>';
+      return;
+    }
+
+    list.innerHTML = data.history.map(h => {
+      const pnlClass = h.pnl > 0 ? 'pnl-positive' : h.pnl < 0 ? 'pnl-negative' : 'pnl-zero';
+      const pnlText = h.pnl != null ? (h.pnl >= 0 ? '+' : '') + h.pnl.toLocaleString() + '円' : '未記録';
+      const preview = (h.final_proposal || '').substring(0, 80) + '...';
+      return `
+        <div class="history-item">
+          <div class="history-header">
+            <span class="history-date">${h.date}</span>
+            <span class="${pnlClass}">${pnlText}</span>
+          </div>
+          <div class="history-preview">${preview}</div>
+          ${h.memo ? `<div style="font-size:11px;color:var(--text2);margin-top:4px">${h.memo}</div>` : ''}
+        </div>`;
+    }).join('');
+  } catch(e) {
+    console.error(e);
+  }
+}
+
+// ── 設定フォーム ──────────────────────────────────────────────────────────
+function populateSettings(data) {
+  if (data.capital)         document.getElementById('set-capital').value = data.capital;
+  if (data.current_amount)  document.getElementById('set-current').value = data.current_amount;
+  if (data.target_amount)   document.getElementById('set-target').value = data.target_amount;
+  if (data.deadline)        document.getElementById('set-deadline').value = data.deadline;
+  if (data.stocks)          state.stocks = data.stocks;
+  renderStockTags();
+}
+
+function renderStockTags() {
+  const el = document.getElementById('stocks-list');
+  el.innerHTML = state.stocks.map(t => `
+    <div class="stock-tag">
+      <span>${t}${state.stockNames[t] ? ' ' + state.stockNames[t] : ''}</span>
+      <span class="stock-remove" onclick="removeStock('${t}')">×</span>
+    </div>`).join('');
+}
+
+function addStock() {
+  const ticker = document.getElementById('inp-ticker').value.trim().toUpperCase();
+  const name   = document.getElementById('inp-name').value.trim();
+  if (!ticker) return;
+  if (!state.stocks.includes(ticker)) {
+    state.stocks.push(ticker);
+    if (name) state.stockNames[ticker] = name;
+  }
+  document.getElementById('inp-ticker').value = '';
+  document.getElementById('inp-name').value = '';
+  renderStockTags();
+}
+
+function removeStock(ticker) {
+  state.stocks = state.stocks.filter(t => t !== ticker);
+  delete state.stockNames[ticker];
+  renderStockTags();
+}
+
+async function saveSettings() {
+  const capital       = parseInt(document.getElementById('set-capital').value);
+  const currentAmount = parseInt(document.getElementById('set-current').value);
+  const targetAmount  = parseInt(document.getElementById('set-target').value);
+  const deadline      = document.getElementById('set-deadline').value;
+
+  if (isNaN(capital) || isNaN(currentAmount) || isNaN(targetAmount) || !deadline) {
+    toast('全項目を入力してください');
+    return;
+  }
+  if (state.stocks.length === 0) {
+    toast('銘柄を1つ以上追加してください');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        capital, current_amount: currentAmount, target_amount: targetAmount,
+        deadline, stocks: state.stocks, stock_names: state.stockNames,
+      }),
+    });
+    if (res.ok) {
+      toast('設定を保存しました');
+      await loadStatus();
+    }
+  } catch(e) {
+    toast('保存エラー: ' + e.message);
+  }
+}
+
+// ── 折りたたみ ────────────────────────────────────────────────────────────
+function toggleCollapsible(id) {
+  document.getElementById(id).classList.toggle('open');
+}
+
+// ── ユーティリティ ────────────────────────────────────────────────────────
+function fmt(n) {
+  return n != null ? n.toLocaleString('ja-JP') + '円' : '---';
+}
+
+let toastTimer;
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 3000);
+}
+</script>
+</body>
+</html>
