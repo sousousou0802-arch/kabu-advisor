@@ -1,6 +1,6 @@
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
-yfinance==0.2.44
+yfinance>=1.0.0
 feedparser==6.0.11
 anthropic==0.40.0
 sqlalchemy==2.0.36

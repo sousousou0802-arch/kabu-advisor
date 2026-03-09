@@ -83,12 +83,21 @@ _FACT_ONLY_INSTRUCTION = (
 def _gemini_search(queries: list[str]) -> str:
     """
     GeminiのGoogle検索グラウンディングでファクトのみを収集する。
-    意見・予測・推奨は取得しない。temperature=0で憶測を排除。
+    失敗した場合は空文字を返し、yfinanceデータのみで分析を続行する。
     """
+    api_key = os.getenv("GOOGLE_API_KEY", "")
+    if not api_key:
+        logger.info("GOOGLE_API_KEY未設定。Gemini検索をスキップ。")
+        return ""
+
     gclient = _get_gemini_client()
     results = []
+    consecutive_failures = 0
 
     for query in queries:
+        if consecutive_failures >= 2:
+            logger.warning("Gemini連続失敗。残りクエリをスキップ。")
+            break
         try:
             response = gclient.models.generate_content(
                 model="gemini-2.0-flash",
@@ -98,12 +107,14 @@ def _gemini_search(queries: list[str]) -> str:
                     temperature=0.0,
                 ),
             )
-            text = response.text or "（結果なし）"
-            results.append(f"【{query}】\n{text}")
+            text = response.text or ""
+            if text:
+                results.append(f"【{query}】\n{text}")
+            consecutive_failures = 0
             logger.info(f"Gemini検索完了: {query[:30]}")
         except Exception as e:
+            consecutive_failures += 1
             logger.warning(f"Gemini検索失敗 ({query}): {e}")
-            results.append(f"【{query}】\n（取得失敗: {e}）")
 
     return "\n\n".join(results)
 
@@ -313,11 +324,13 @@ def generate_proposal(settings: dict, portfolio: list[dict], history: list[dict]
     rss_news = get_market_news_rss(max_items=15)
     rss_text = "\n".join(f"- {n['title']}: {n['summary']}" for n in rss_news)
 
-    full_market_info = (
-        f"## Gemini Google検索結果\n{market_info}\n\n"
-        f"## 市場ニュース（RSS）\n{rss_text}\n\n"
-        f"## 主要銘柄の株価・テクニカルデータ\n{fallback_summary}"
-    )
+    sections = []
+    if market_info:
+        sections.append(f"## Gemini Google検索結果\n{market_info}")
+    if rss_text.strip():
+        sections.append(f"## 市場ニュース（RSS）\n{rss_text}")
+    sections.append(f"## 主要銘柄の株価・テクニカルデータ（yfinance）\n{fallback_summary}")
+    full_market_info = "\n\n".join(sections)
 
     # Gemini検索はClaudeのトークン制限に影響しないので待機不要
     logger.info("Step1b完了。65秒待機（Claudeスクリーナー前）...")
