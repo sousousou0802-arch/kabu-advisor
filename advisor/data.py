@@ -5,6 +5,7 @@
 - Yahoo!ファイナンスRSS: 最新ニュース
 """
 
+import io
 import math
 import logging
 import os
@@ -19,6 +20,59 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 JQUANTS_BASE = "https://api.jquants.com/v1"
+
+# ── JPX公開データ ─────────────────────────────────────────────────────────────
+
+_JPX_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
+_JPX_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; kabu-advisor/1.0)"}
+
+def get_all_tse_tickers_from_jpx(markets: list[str] | None = None) -> list[str]:
+    """
+    JPX公開Excelから全TSE内国株ティッカーリストを取得する。
+    カラム: コード / 銘柄名 / 市場・商品区分 (例: "プライム（内国株式）")
+    markets: None=全内国株, ["プライム"], ["プライム","スタンダード"] 等で市場フィルタ。
+    """
+    try:
+        resp = requests.get(_JPX_URL, headers=_JPX_HEADERS, timeout=30)
+        resp.raise_for_status()
+        df = pd.read_excel(io.BytesIO(resp.content), dtype=str)
+
+        # コード列・市場区分列を特定
+        code_col = next(
+            (c for c in df.columns if "コード" in str(c) or str(c).lower() in ("code",)),
+            df.columns[0],
+        )
+        market_col = next(
+            (c for c in df.columns if "市場" in str(c)),
+            None,
+        )
+
+        tickers = []
+        for _, row in df.iterrows():
+            raw_code = str(row[code_col]).strip().split(".")[0]  # "1234.0" → "1234"
+            if len(raw_code) != 4 or not raw_code.isdigit():
+                continue
+
+            market_val = str(row.get(market_col, "")) if market_col else ""
+
+            # 内国株式のみ（ETF・ETN・外国株式・REIT等を除外）
+            if market_col and "内国株式" not in market_val:
+                continue
+
+            # 追加の市場フィルタ（プライム/スタンダード/グロース）
+            if markets:
+                if not any(m in market_val for m in markets):
+                    continue
+
+            tickers.append(f"{raw_code}.T")
+
+        logger.info(f"JPX: {len(tickers)}銘柄取得 (markets={markets})")
+        return tickers
+
+    except Exception as e:
+        logger.warning(f"JPX Excelデータ取得失敗: {e}")
+        return []
+
 
 # ── J-Quants ────────────────────────────────────────────────────────────────
 
@@ -78,11 +132,57 @@ def _jquants_id_token() -> Optional[str]:
         return None
 
 
+def _get_fundamental_from_yfinance(ticker: str) -> dict:
+    """
+    yfinance .info からファンダメンタルデータを取得する（J-Quantsのフォールバック）。
+    取得項目: PER・PBR・配当利回り・売上・営業利益・純利益・時価総額。
+    """
+    try:
+        info = yf.Ticker(ticker).info
+        if not info or info.get("trailingPE") is None and info.get("marketCap") is None:
+            return {"error": "yfinance info取得失敗", "ticker": ticker, "source": "yfinance"}
+
+        def _safe(key, default=None):
+            v = info.get(key)
+            return v if v is not None else default
+
+        revenue = _safe("totalRevenue")
+        op_income = _safe("operatingCashflow") or _safe("ebitda")  # 営業利益の近似
+        net_income = _safe("netIncomeToCommon")
+        market_cap = _safe("marketCap")
+
+        return {
+            "ticker": ticker,
+            "source": "yfinance",
+            "per": _safe("trailingPE"),
+            "forward_per": _safe("forwardPE"),
+            "pbr": _safe("priceToBook"),
+            "dividend_yield": _safe("dividendYield"),  # yfinanceは0.027形式(=2.7%)で返す
+            "net_sales": revenue,
+            "operating_profit": op_income,
+            "net_income": net_income,
+            "market_cap": market_cap,
+            "roe": _safe("returnOnEquity"),
+            "roa": _safe("returnOnAssets"),
+            "debt_to_equity": _safe("debtToEquity"),
+            "current_ratio": _safe("currentRatio"),
+            # J-Quants互換フィールド（なければNone）
+            "fiscal_year": None,
+            "sales_deviation_pct": None,
+            "op_profit_deviation_pct": None,
+        }
+    except Exception as e:
+        logger.warning(f"yfinance fundamental取得失敗 ({ticker}): {e}")
+        return {"error": str(e), "ticker": ticker, "source": "yfinance"}
+
+
 def get_fundamental_data(ticker: str) -> dict:
     code = ticker.replace(".T", "")
     id_token = _jquants_id_token()
     if not id_token:
-        return {"error": "J-Quants APIトークン未設定", "ticker": ticker}
+        # J-Quants未設定 → yfinanceにフォールバック
+        logger.debug(f"J-Quants未設定のためyfinanceでファンダメンタル取得: {ticker}")
+        return _get_fundamental_from_yfinance(ticker)
     headers = {"Authorization": f"Bearer {id_token}"}
     try:
         res = requests.get(
@@ -102,6 +202,7 @@ def get_fundamental_data(ticker: str) -> dict:
         forecast_op = float(latest.get("ForecastOperatingProfit") or 0)
         return {
             "ticker": ticker,
+            "source": "jquants",
             "fiscal_year": latest.get("FiscalYear"),
             "net_sales": net_sales,
             "operating_profit": op_profit,

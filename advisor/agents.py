@@ -51,9 +51,9 @@ def _is_rate_limit(e: Exception) -> bool:
 
 
 def _api_call_with_retry(fn, label: str = ""):
-    """任意のAPI呼び出しを429 exponential backoffでラップする"""
-    max_retries = 6
-    wait = 90  # 初回90秒待機（トークンウィンドウのリセットを待つ）
+    """任意のAPI呼び出しを429 exponential backoffでラップする（最大3回）"""
+    max_retries = 3
+    wait = 60  # 初回60秒待機
     for attempt in range(max_retries):
         try:
             return fn()
@@ -134,13 +134,28 @@ def _gemini_search(queries: list[str]) -> str:
 
 # ── エージェント呼び出し ──────────────────────────────────────────────────────
 
+_MAX_INPUT_CHARS = 24_000  # 約6,000トークン上限（入力）
+
+
+def _cap(text: str, max_chars: int = _MAX_INPUT_CHARS) -> str:
+    """テキストを文字数上限で切り詰める（トークン超過防止）"""
+    if len(text) <= max_chars:
+        return text
+    truncated = text[:max_chars]
+    logger.warning(f"入力テキストを{max_chars}文字に切り詰めました（元: {len(text)}文字）")
+    return truncated + "\n...[文字数制限のため省略]"
+
+
 def _call_agent(client: anthropic.Anthropic, system: str, user: str) -> str:
+    # 入力が大きすぎる場合は切り詰めてからAPI呼び出し
+    user_capped = _cap(user)
+
     def fn():
         response = client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
             system=system,
-            messages=[{"role": "user", "content": user}],
+            messages=[{"role": "user", "content": user_capped}],
         )
         return response.content[0].text
 
@@ -288,14 +303,23 @@ BROAD_UNIVERSE_FALLBACK = list(dict.fromkeys(BROAD_UNIVERSE_FALLBACK))
 
 def _get_universe() -> list[str]:
     """
-    使用する銘柄ユニバースを返す。
-    J-Quants APIが利用可能なら全TSEプライム1800銘柄、なければフォールバックリスト。
+    使用する銘柄ユニバースを返す（プライム・スタンダード・グロース全市場）。
+    優先順: JPX公開Excel（全市場）→ J-Quants（プライムのみ）→ フォールバック。
     """
-    from advisor.data import get_all_tse_prime_tickers
+    # 1. JPX公開データ（プライム+スタンダード+グロース）
+    from advisor.data import get_all_tse_tickers_from_jpx, get_all_tse_prime_tickers
+    jpx = get_all_tse_tickers_from_jpx()
+    if jpx and len(jpx) > 200:
+        logger.info(f"JPX動的ユニバース使用: {len(jpx)}銘柄（全市場）")
+        return jpx
+
+    # 2. J-Quants（プライムのみ）
     dynamic = get_all_tse_prime_tickers()
     if dynamic and len(dynamic) > 100:
         logger.info(f"J-Quants動的ユニバース使用: {len(dynamic)}銘柄")
         return dynamic
+
+    # 3. 静的フォールバック
     logger.info(f"フォールバックユニバース使用: {len(BROAD_UNIVERSE_FALLBACK)}銘柄")
     return BROAD_UNIVERSE_FALLBACK
 
@@ -649,54 +673,51 @@ def generate_proposal(settings: dict, portfolio: list[dict], history: list[dict]
     target_amount = settings["target_amount"]
     capital = settings["capital"]
 
+    def _esc(t: str) -> str:
+        return str(t).replace("{", "{{").replace("}", "}}")
+
     # ── Step 1a: 広域ユニバース高速事前スクリーニング ─────────────────────────
     universe = _get_universe()
     logger.info(f"Step1a: 広域スクリーニング開始（{len(universe)}銘柄）")
     held_tickers = [p["ticker"] for p in portfolio]
 
-    # 高速スクリーニング: 全ユニバースから注目上位60銘柄を抽出（5因子複合スコア）
+    # 高速スクリーニング: 全ユニバースから注目上位30銘柄を抽出（5因子複合スコア）
     top_tickers, prescreen_summary = _fast_prescreen(
-        universe, available_cash=current_cash, top_n=60
+        universe, available_cash=current_cash, top_n=30
     )
 
     # 保有銘柄は必ず含める（売り候補として分析が必要）
     prefetch_tickers = list(dict.fromkeys(top_tickers + held_tickers))
 
-    # 上位銘柄のみ深い分析（MA/RSI/MACDなど）
+    # 上位30銘柄の詳細データを収集（MA/RSI/MACD/ファンダメンタル/ニュース）
     raw_data = collect_stock_data(prefetch_tickers)
-    fallback_summary = _format_data_for_agents(raw_data)
+    detailed_summary = _format_data_for_agents(raw_data)
 
-    # ── Step 1b: Gemini Google検索で市場情報を網羅的に収集 ───────────────────
-    logger.info("Step1b: Gemini検索（市場情報・銘柄情報）")
+    # ── Step 1b: Gemini Google検索で市場情報を収集 ────────────────────────────
+    logger.info("Step1b: Gemini検索（市場情報）")
     market_queries = build_market_search_queries()
-
-    # 市場全体クエリのみ（銘柄個別はyfinanceで代替、クエリ数を最小化）
     market_info = _gemini_search(market_queries)
 
-    # RSS市場ニュース（全文）
-    rss_news = get_market_news_rss(max_items=15)
-    rss_text = "\n".join(f"- {n['title']}: {n['summary']}" for n in rss_news)
+    rss_news = get_market_news_rss(max_items=8)
+    rss_text = "\n".join(f"- {n['title']}" for n in rss_news)
 
     sections = []
     if market_info:
         sections.append(f"## Gemini Google検索結果\n{market_info}")
     if rss_text.strip():
         sections.append(f"## 市場ニュース（RSS）\n{rss_text}")
-    # 事前スクリーニング結果（全ユニバース中の注目銘柄ランキング）
-    sections.append(f"{prescreen_summary}")
-    sections.append(f"## 上位候補の詳細データ（株価・テクニカル）\n{fallback_summary}")
+    sections.append(prescreen_summary)
+    sections.append(f"## 上位候補の詳細データ\n{detailed_summary}")
     full_market_info = "\n\n".join(sections)
 
-    logger.info("Step1b完了。30秒待機（Claudeスクリーナー前）...")
-    time.sleep(30)
+    logger.info("Step1b完了。20秒待機（Claudeスクリーナー前）...")
+    time.sleep(20)
 
     # ── Step 1c: スクリーナーエージェント ────────────────────────────────────
+    # 入力: 30銘柄の詳細データ → 出力: 最終候補5〜8銘柄 + 各銘柄の要点サマリー
+    # （このサマリーがStep2〜4の入力になるため、ここでデータを圧縮する）
     logger.info("Step1c: スクリーナー実行")
     portfolio_summary_text = _portfolio_summary(portfolio, raw_data)
-
-    # _esc はこの時点ではまだ未定義のため、ここで定義（Step2以降で再利用）
-    def _esc(t: str) -> str:
-        return str(t).replace("{", "{{").replace("}", "}}")
 
     screener_user = SCREENER_USER_TEMPLATE.format(
         available_cash=current_cash,
@@ -708,14 +729,12 @@ def generate_proposal(settings: dict, portfolio: list[dict], history: list[dict]
         history=_esc(history_text),
     )
     screening_result = _call_agent(client, SCREENER_SYSTEM, screener_user)
+    logger.info("Step1c完了。20秒待機...")
+    time.sleep(20)
 
-    logger.info("スクリーナー完了。30秒待機...")
-    time.sleep(30)
-
-    # 候補銘柄を抽出（フォールバック込み）
+    # 候補銘柄を抽出（スクリーナーが5〜8銘柄を選出する）
     candidate_tickers = _parse_candidates(screening_result)
     all_tickers = list(dict.fromkeys(candidate_tickers + held_tickers))
-
     logger.info(f"候補銘柄: {all_tickers}")
 
     # 未収集の銘柄があれば追加収集
@@ -724,12 +743,10 @@ def generate_proposal(settings: dict, portfolio: list[dict], history: list[dict]
         extra = collect_stock_data(new_tickers)
         raw_data["stocks"].update(extra["stocks"])
 
-    # ポートフォリオサマリー（株価データ込み）
     portfolio_summary_text = _portfolio_summary(portfolio, raw_data)
     sv = _stock_value(portfolio, raw_data)
     total_assets = current_cash + sv
 
-    candidates_text = screening_result
     context_text = (
         f"現在の現金: {current_cash:,}円\n"
         f"保有株式評価額: {sv:,}円\n"
@@ -738,38 +755,45 @@ def generate_proposal(settings: dict, portfolio: list[dict], history: list[dict]
         f"期日: {settings['deadline']}（残り{remaining_days}日）\n"
         f"今日: {today_str}"
     )
-    # 候補銘柄の完全データ（テキスト形式）をエージェントに渡す
-    data_text = _format_data_for_agents(raw_data)
+
+    # Step2〜4の入力: スクリーナーが絞った候補銘柄のデータのみ（30→5〜8銘柄）
+    # スクリーナーの出力テキスト自体が各銘柄の要点を含んでいるため、
+    # 生データはあくまで補足（数値の参照用）として渡す
+    candidate_raw = {
+        "stocks": {t: raw_data["stocks"][t] for t in all_tickers if t in raw_data["stocks"]}
+    }
+    data_text = _format_data_for_agents(candidate_raw)
 
     # ── Step 2: 強気アナリスト ────────────────────────────────────────────────
+    # 入力: スクリーナーの選定結果(テキスト) + 候補銘柄の生データ(5〜8銘柄分)
     logger.info("Step2: 強気アナリスト")
     bull_analysis = _call_agent(
         client, BULL_SYSTEM,
         BULL_USER_TEMPLATE.format(
-            candidates=_esc(candidates_text),
+            candidates=_esc(screening_result),
             context=_esc(context_text),
             data=_esc(data_text),
         )
     )
-
-    logger.info("Step2完了。30秒待機...")
-    time.sleep(30)
+    logger.info("Step2完了。20秒待機...")
+    time.sleep(20)
 
     # ── Step 3: 弱気アナリスト ────────────────────────────────────────────────
+    # 入力: 同上（bull_analysisは渡さない。独立した判断を維持するため）
     logger.info("Step3: 弱気アナリスト")
     bear_analysis = _call_agent(
         client, BEAR_SYSTEM,
         BEAR_USER_TEMPLATE.format(
-            candidates=_esc(candidates_text),
+            candidates=_esc(screening_result),
             context=_esc(context_text),
             data=_esc(data_text),
         )
     )
-
-    logger.info("Step3完了。30秒待機...")
-    time.sleep(30)
+    logger.info("Step3完了。20秒待機...")
+    time.sleep(20)
 
     # ── Step 4: リスク管理官 ──────────────────────────────────────────────────
+    # 入力: 財務状況 + スクリーナー選定結果のみ（生データ不要）
     logger.info("Step4: リスク管理官")
     risk_analysis = _call_agent(
         client, RISK_SYSTEM,
@@ -781,15 +805,16 @@ def generate_proposal(settings: dict, portfolio: list[dict], history: list[dict]
             target_amount=target_amount,
             deadline=settings["deadline"],
             remaining_days=remaining_days,
-            candidates=_esc(candidates_text),
+            candidates=_esc(screening_result),
             portfolio_summary=_esc(portfolio_summary_text),
         )
     )
-
-    logger.info("Step4完了。30秒待機...")
-    time.sleep(30)
+    logger.info("Step4完了。20秒待機...")
+    time.sleep(20)
 
     # ── Step 5: モデレーター ──────────────────────────────────────────────────
+    # 入力: Step1〜4のテキスト出力のみ（生データなし）
+    # ← 各エージェントの出力はすでに圧縮済みのため、入力量は最小
     logger.info("Step5: モデレーター統合")
     final_proposal = _call_agent(
         client, MODERATOR_SYSTEM,
