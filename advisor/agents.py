@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import date
 from typing import Optional
 
@@ -67,13 +68,24 @@ def _web_search(client: anthropic.Anthropic, queries: list[str], max_uses: int =
 # ── エージェント呼び出し ──────────────────────────────────────────────────────
 
 def _call_agent(client: anthropic.Anthropic, system: str, user: str) -> str:
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=MAX_TOKENS,
-        system=system,
-        messages=[{"role": "user", "content": user}],
-    )
-    return response.content[0].text
+    """429レート制限に対してexponential backoffでリトライする"""
+    max_retries = 5
+    wait = 60  # 初回待機秒数
+    for attempt in range(max_retries):
+        try:
+            response = client.messages.create(
+                model=MODEL,
+                max_tokens=MAX_TOKENS,
+                system=system,
+                messages=[{"role": "user", "content": user}],
+            )
+            return response.content[0].text
+        except anthropic.RateLimitError as e:
+            if attempt == max_retries - 1:
+                raise
+            logger.warning(f"429 rate limit。{wait}秒後にリトライ ({attempt+1}/{max_retries}): {e}")
+            time.sleep(wait)
+            wait *= 2  # exponential backoff
 
 
 # ── ポートフォリオサマリー生成 ───────────────────────────────────────────────
@@ -221,6 +233,9 @@ def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
         )
     )
 
+    logger.info("Step2完了。30秒待機...")
+    time.sleep(30)
+
     # ── Step 3: 弱気アナリスト ────────────────────────────────────────────────
     logger.info("Step3: 弱気アナリスト")
     bear_analysis = _call_agent(
@@ -231,6 +246,9 @@ def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
             data=data_text,
         )
     )
+
+    logger.info("Step3完了。30秒待機...")
+    time.sleep(30)
 
     # ── Step 4: リスク管理官 ──────────────────────────────────────────────────
     logger.info("Step4: リスク管理官")
@@ -248,6 +266,9 @@ def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
             portfolio_summary=portfolio_summary_text,
         )
     )
+
+    logger.info("Step4完了。30秒待機...")
+    time.sleep(30)
 
     # ── Step 5: モデレーター ──────────────────────────────────────────────────
     logger.info("Step5: モデレーター統合")
