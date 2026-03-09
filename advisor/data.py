@@ -195,7 +195,8 @@ def _technical_from_df(ticker: str, close: pd.Series, volume: pd.Series) -> dict
     ma25 = close.rolling(25).mean()
     ma75 = close.rolling(75).mean()
     vol_ma20 = volume.rolling(20).mean()
-    vol_ratio = round(float(volume.iloc[-1] / vol_ma20.iloc[-1]), 2) if vol_ma20.iloc[-1] else None
+    _vm = vol_ma20.iloc[-1]
+    vol_ratio = round(float(volume.iloc[-1] / _vm), 2) if (pd.notna(_vm) and _vm > 0) else None
     week52_high = round(float(close.max()), 2)
     week52_low = round(float(close.min()), 2)
     price_chg = round(float((close.iloc[-1] - close.iloc[-2]) / close.iloc[-2] * 100), 2) if len(close) >= 2 else None

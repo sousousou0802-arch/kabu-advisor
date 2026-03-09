@@ -694,21 +694,25 @@ def generate_proposal(settings: dict, portfolio: list[dict], history: list[dict]
     sections.append(f"## 上位候補の詳細データ（株価・テクニカル）\n{fallback_summary}")
     full_market_info = "\n\n".join(sections)
 
-    # Gemini検索はClaudeのトークン制限に影響しないので待機不要
-    logger.info("Step1b完了。65秒待機（Claudeスクリーナー前）...")
+    logger.info("Step1b完了。30秒待機（Claudeスクリーナー前）...")
+    time.sleep(30)
 
     # ── Step 1c: スクリーナーエージェント ────────────────────────────────────
     logger.info("Step1c: スクリーナー実行")
     portfolio_summary_text = _portfolio_summary(portfolio, raw_data)
+
+    # _esc はこの時点ではまだ未定義のため、ここで定義（Step2以降で再利用）
+    def _esc(t: str) -> str:
+        return str(t).replace("{", "{{").replace("}", "}}")
 
     screener_user = SCREENER_USER_TEMPLATE.format(
         available_cash=current_cash,
         target_amount=target_amount,
         deadline=settings["deadline"],
         remaining_days=remaining_days,
-        portfolio_summary=portfolio_summary_text,
-        market_info=full_market_info,
-        history=history_text,
+        portfolio_summary=_esc(portfolio_summary_text),
+        market_info=_esc(full_market_info),
+        history=_esc(history_text),
     )
     screening_result = _call_agent(client, SCREENER_SYSTEM, screener_user)
 
@@ -749,9 +753,9 @@ def generate_proposal(settings: dict, portfolio: list[dict], history: list[dict]
     bull_analysis = _call_agent(
         client, BULL_SYSTEM,
         BULL_USER_TEMPLATE.format(
-            candidates=candidates_text,
-            context=context_text,
-            data=data_text,
+            candidates=_esc(candidates_text),
+            context=_esc(context_text),
+            data=_esc(data_text),
         )
     )
 
@@ -763,9 +767,9 @@ def generate_proposal(settings: dict, portfolio: list[dict], history: list[dict]
     bear_analysis = _call_agent(
         client, BEAR_SYSTEM,
         BEAR_USER_TEMPLATE.format(
-            candidates=candidates_text,
-            context=context_text,
-            data=data_text,
+            candidates=_esc(candidates_text),
+            context=_esc(context_text),
+            data=_esc(data_text),
         )
     )
 
@@ -784,8 +788,8 @@ def generate_proposal(settings: dict, portfolio: list[dict], history: list[dict]
             target_amount=target_amount,
             deadline=settings["deadline"],
             remaining_days=remaining_days,
-            candidates=candidates_text,
-            portfolio_summary=portfolio_summary_text,
+            candidates=_esc(candidates_text),
+            portfolio_summary=_esc(portfolio_summary_text),
         )
     )
 
@@ -800,12 +804,12 @@ def generate_proposal(settings: dict, portfolio: list[dict], history: list[dict]
             current_cash=current_cash,
             target_amount=target_amount,
             deadline=settings["deadline"],
-            portfolio_summary=portfolio_summary_text,
-            screening_result=screening_result,
-            bull_analysis=bull_analysis,
-            bear_analysis=bear_analysis,
-            risk_analysis=risk_analysis,
-            history=history_text,
+            portfolio_summary=_esc(portfolio_summary_text),
+            screening_result=_esc(screening_result),
+            bull_analysis=_esc(bull_analysis),
+            bear_analysis=_esc(bear_analysis),
+            risk_analysis=_esc(risk_analysis),
+            history=_esc(history_text),
         )
     )
 
