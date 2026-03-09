@@ -67,10 +67,23 @@ def _api_call_with_retry(fn, label: str = ""):
             wait = int(wait * 1.5)
 
 
+_FACT_ONLY_INSTRUCTION = (
+    "以下のクエリで検索し、「確定した数値・公式発表・経済指標」のみを報告してください。\n"
+    "【厳守ルール】\n"
+    "- 報告するのは数値・日付・公式発表のみ。例: 『日経平均終値: 38,500円 (3/9)』\n"
+    "- アナリスト意見・予測・推奨・目標株価・センチメントは一切不要\n"
+    "- 『〜と見られる』『〜の可能性』『〜が期待される』などの推測表現は使わない\n"
+    "- ニュース記事の論調や見出しの雰囲気は無視する\n"
+    "- 数値が取得できない場合は『取得不可』とだけ記載する\n"
+    "- 形式: 箇条書き（指標名: 数値 出典日時）\n\n"
+    "クエリ: {query}"
+)
+
+
 def _gemini_search(queries: list[str]) -> str:
     """
-    GeminiのGoogle検索グラウンディングで複数クエリを検索する。
-    Claudeのweb_searchと違いトークン制限がなく、レート制限も緩い。
+    GeminiのGoogle検索グラウンディングでファクトのみを収集する。
+    意見・予測・推奨は取得しない。temperature=0で憶測を排除。
     """
     gclient = _get_gemini_client()
     results = []
@@ -79,10 +92,10 @@ def _gemini_search(queries: list[str]) -> str:
         try:
             response = gclient.models.generate_content(
                 model="gemini-2.0-flash",
-                contents=f"以下について検索し、投資判断に役立つ最新情報・数値・事実を詳しく答えてください。\n\n{query}",
+                contents=_FACT_ONLY_INSTRUCTION.format(query=query),
                 config=gtypes.GenerateContentConfig(
                     tools=[gtypes.Tool(google_search=gtypes.GoogleSearch())],
-                    temperature=0.1,
+                    temperature=0.0,
                 ),
             )
             text = response.text or "（結果なし）"
