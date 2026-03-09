@@ -138,13 +138,33 @@ def _stock_value(portfolio: list[dict], stock_data: dict) -> int:
     return total
 
 
+# ── フォールバック銘柄ユニバース ──────────────────────────────────────────────
+# web_searchが失敗してもyfinanceで必ずデータ収集できる流動性の高い銘柄
+FALLBACK_UNIVERSE = [
+    "7203.T",  # トヨタ自動車
+    "6758.T",  # ソニーグループ
+    "9984.T",  # ソフトバンクグループ
+    "6861.T",  # キーエンス
+    "8306.T",  # 三菱UFJフィナンシャル
+    "9432.T",  # 日本電信電話
+    "6367.T",  # ダイキン工業
+    "7974.T",  # 任天堂
+    "4063.T",  # 信越化学工業
+    "8035.T",  # 東京エレクトロン
+]
+
 # ── 候補銘柄をスクリーニング結果からパース ─────────────────────────────────
 
 def _parse_candidates(screening_text: str) -> list[str]:
     """スクリーニング結果からティッカーコードを抽出する"""
     pattern = r'\b(\d{4})\.T\b'
     tickers = re.findall(pattern, screening_text)
-    return [f"{t}.T" for t in dict.fromkeys(tickers)]  # 重複除去・順序保持
+    result = [f"{t}.T" for t in dict.fromkeys(tickers)]
+    # スクリーナーが銘柄を出せなかった場合はフォールバックユニバースを使う
+    if not result:
+        logger.warning("スクリーナーが銘柄を返さなかった。フォールバックユニバースを使用。")
+        result = FALLBACK_UNIVERSE[:5]
+    return result
 
 
 # ── エージェント向けデータサマリー ─────────────────────────────────────────────
@@ -221,12 +241,23 @@ def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
     full_market_info = f"{market_info}\n\n## 市場ニュース\n{rss_text}"
     full_market_info = full_market_info[:2000]  # 2000文字に制限
 
+    # ── Step 1b: フォールバックユニバースのyfinance/RSSデータを先に収集 ────────
+    logger.info("Step1b: フォールバックユニバース + 保有銘柄のデータ収集")
+    held_tickers = [p["ticker"] for p in portfolio]
+    prefetch_tickers = list(dict.fromkeys(FALLBACK_UNIVERSE[:5] + held_tickers))
+    raw_data = collect_stock_data(prefetch_tickers)
+
+    # フォールバックデータのサマリーをmarket_infoに追加
+    fallback_summary = _format_data_for_agents(raw_data)
+    full_market_info = f"{full_market_info}\n\n## 主要銘柄の株価データ\n{fallback_summary}"
+    full_market_info = full_market_info[:3000]
+
     logger.info("web_search完了。60秒待機...")
     time.sleep(60)
 
-    # ── Step 1b: スクリーナーエージェント ────────────────────────────────────
-    logger.info("Step1b: スクリーナー実行")
-    portfolio_summary_text = _portfolio_summary(portfolio, {"stocks": {}})
+    # ── Step 1c: スクリーナーエージェント ────────────────────────────────────
+    logger.info("Step1c: スクリーナー実行")
+    portfolio_summary_text = _portfolio_summary(portfolio, raw_data)
 
     screener_user = SCREENER_USER_TEMPLATE.format(
         available_cash=current_cash,
@@ -241,16 +272,17 @@ def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
     logger.info("スクリーナー完了。30秒待機...")
     time.sleep(30)
 
-    # 候補銘柄を抽出してデータ収集
+    # 候補銘柄を抽出（フォールバック込み）
     candidate_tickers = _parse_candidates(screening_result)
-    # 保有銘柄も含める
-    held_tickers = [p["ticker"] for p in portfolio]
     all_tickers = list(dict.fromkeys(candidate_tickers + held_tickers))
 
     logger.info(f"候補銘柄: {all_tickers}")
 
-    # ── Step 1c: 候補銘柄の株価・ニュースを収集 ──────────────────────────────
-    raw_data = collect_stock_data(all_tickers)
+    # 未収集の銘柄があれば追加収集
+    new_tickers = [t for t in all_tickers if t not in raw_data["stocks"]]
+    if new_tickers:
+        extra = collect_stock_data(new_tickers)
+        raw_data["stocks"].update(extra["stocks"])
 
     # ポートフォリオサマリー（株価データ込み）
     portfolio_summary_text = _portfolio_summary(portfolio, raw_data)
