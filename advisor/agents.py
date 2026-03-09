@@ -282,8 +282,8 @@ def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
     )
     screening_result = _call_agent(client, SCREENER_SYSTEM, screener_user)
 
-    logger.info("スクリーナー完了。65秒待機...")
-    time.sleep(65)
+    logger.info("スクリーナー完了。30秒待機...")
+    time.sleep(30)
 
     # 候補銘柄を抽出（フォールバック込み）
     candidate_tickers = _parse_candidates(screening_result)
@@ -325,8 +325,8 @@ def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
         )
     )
 
-    logger.info("Step2完了。65秒待機...")
-    time.sleep(65)
+    logger.info("Step2完了。30秒待機...")
+    time.sleep(30)
 
     # ── Step 3: 弱気アナリスト ────────────────────────────────────────────────
     logger.info("Step3: 弱気アナリスト")
@@ -339,8 +339,8 @@ def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
         )
     )
 
-    logger.info("Step3完了。65秒待機...")
-    time.sleep(65)
+    logger.info("Step3完了。30秒待機...")
+    time.sleep(30)
 
     # ── Step 4: リスク管理官 ──────────────────────────────────────────────────
     logger.info("Step4: リスク管理官")
@@ -359,8 +359,8 @@ def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
         )
     )
 
-    logger.info("Step4完了。65秒待機...")
-    time.sleep(65)
+    logger.info("Step4完了。30秒待機...")
+    time.sleep(30)
 
     # ── Step 5: モデレーター ──────────────────────────────────────────────────
     logger.info("Step5: モデレーター統合")
