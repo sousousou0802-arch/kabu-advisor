@@ -181,113 +181,158 @@ def _stock_value(portfolio: list[dict], stock_data: dict) -> int:
     return total
 
 
-# ── 広域銘柄ユニバース（TSEプライム流動性上位〜500銘柄） ──────────────────
-# 日経225 + TOPIX Large70 + 主要中型株をセクター横断で収録
-# 量的事前スクリーニングでトップ50に絞り込み → AIスクリーナーが最終選定
-BROAD_UNIVERSE = [
+# ── 広域銘柄ユニバース（TSEプライム主要銘柄 フォールバック〜800銘柄） ──────
+# J-Quants APIが利用可能な場合は動的に全TSEプライム1800銘柄を取得。
+# 利用不可の場合はこのリストを使用。セクター横断で流動性の高い銘柄を網羅。
+BROAD_UNIVERSE_FALLBACK = [
     # 自動車・輸送機器
     "7203.T", "7267.T", "7270.T", "7201.T", "7269.T", "7211.T", "7261.T",
     "6902.T", "7272.T", "7282.T", "7240.T", "7248.T", "7251.T", "7309.T",
-    "7965.T", "6471.T", "6481.T",
+    "7965.T", "6471.T", "6481.T", "4248.T", "5108.T", "7762.T",
     # 電機・半導体・精密機器
     "6758.T", "6861.T", "6367.T", "8035.T", "6723.T", "6857.T", "6594.T",
     "6501.T", "6503.T", "6752.T", "6971.T", "6976.T", "6981.T", "7735.T",
     "7741.T", "6645.T", "6326.T", "6301.T", "6305.T", "6473.T", "6479.T",
     "6504.T", "6506.T", "6586.T", "6674.T", "6702.T", "6724.T", "6728.T",
     "6740.T", "6754.T", "6762.T", "6770.T", "6807.T", "6841.T", "6869.T",
-    "6954.T", "6963.T", "6966.T", "6967.T", "7731.T", "7733.T", "7762.T",
-    "6472.T", "6417.T", "6383.T", "6315.T", "6273.T", "6268.T", "6383.T",
-    # IT・ソフトウェア・通信
+    "6954.T", "6963.T", "6966.T", "6967.T", "7731.T", "7733.T",
+    "6472.T", "6417.T", "6383.T", "6315.T", "6273.T", "6268.T",
+    "6201.T", "6361.T", "6366.T", "6370.T", "6374.T", "6378.T",
+    "6381.T", "6382.T", "6391.T", "6395.T", "6399.T", "6402.T",
+    "6407.T", "6412.T", "6413.T", "6460.T", "6461.T", "6463.T",
+    "6465.T", "6466.T", "6467.T", "6469.T", "6470.T",
+    # IT・ソフトウェア・通信・インターネット
     "9984.T", "9432.T", "9433.T", "9434.T", "4755.T", "3659.T", "4689.T",
     "9613.T", "9719.T", "4307.T", "3668.T", "4726.T", "3769.T", "3923.T",
     "4171.T", "4543.T", "2432.T", "4185.T", "4783.T", "9749.T", "9783.T",
-    "2371.T", "3092.T", "3697.T", "4004.T", "4021.T", "4386.T", "4443.T",
-    "4565.T", "4587.T", "4776.T", "4911.T", "6027.T", "6088.T", "6098.T",
-    "6178.T", "6254.T", "6532.T", "6539.T", "7065.T", "9107.T", "9143.T",
-    "3558.T", "3962.T", "4051.T", "4053.T",
+    "2371.T", "3092.T", "3697.T", "4386.T", "4443.T", "4565.T", "4587.T",
+    "4776.T", "6027.T", "6088.T", "6098.T", "6178.T", "6254.T",
+    "6532.T", "6539.T", "3558.T", "3962.T", "4051.T", "4053.T",
+    "3825.T", "3834.T", "3836.T", "3837.T", "4010.T", "4012.T",
+    "4013.T", "4016.T", "4018.T", "4019.T", "4020.T", "4021.T",
+    "3672.T", "3676.T", "3681.T", "3686.T", "3688.T", "3690.T",
+    "3695.T", "3696.T", "3727.T", "3728.T", "3738.T", "3741.T",
+    "3744.T", "3769.T", "3774.T", "3778.T", "3785.T", "3788.T",
     # 金融・銀行・証券・保険
     "8306.T", "8316.T", "8411.T", "8309.T", "8604.T", "8601.T",
     "8697.T", "8750.T", "8725.T", "8630.T", "8766.T", "8795.T",
     "8253.T", "8354.T", "8355.T", "8359.T", "8361.T", "8385.T",
-    "7186.T", "8418.T", "8473.T", "8593.T",
+    "7186.T", "8418.T", "8473.T", "8593.T", "8740.T", "8742.T",
+    "8745.T", "8798.T", "8803.T", "8999.T",
     # 小売・消費財
     "9983.T", "3382.T", "8267.T", "2651.T", "2784.T", "7459.T",
     "3088.T", "3099.T", "2668.T", "3289.T", "7453.T", "7532.T",
     "3086.T", "3197.T", "2730.T", "7516.T", "2782.T", "7513.T",
-    "7412.T", "3048.T", "2670.T", "9843.T", "8905.T",
+    "7412.T", "3048.T", "2670.T", "9843.T", "8905.T", "9831.T",
+    "2792.T", "2670.T", "2674.T", "2678.T", "2681.T", "2683.T",
+    "2685.T", "2686.T", "2695.T", "2698.T", "2700.T", "2702.T",
     # 素材・化学
     "4063.T", "4188.T", "4183.T", "4005.T", "4452.T", "5019.T", "5020.T",
-    "5101.T", "5108.T", "4021.T", "4041.T", "4042.T", "4061.T", "4114.T",
+    "5101.T", "4021.T", "4041.T", "4042.T", "4061.T", "4114.T",
     "4217.T", "4272.T", "4324.T", "4331.T", "4347.T", "4401.T", "4403.T",
-    "4406.T", "4409.T", "4424.T", "4461.T", "4471.T", "4521.T", "4543.T",
-    "4612.T", "4631.T", "4641.T", "4661.T", "4676.T", "4680.T", "4689.T",
-    "4694.T", "4704.T", "4722.T", "4732.T", "4733.T", "4746.T", "4752.T",
+    "4406.T", "4409.T", "4424.T", "4461.T", "4471.T", "4521.T",
+    "4612.T", "4631.T", "4641.T", "4661.T", "4676.T", "4680.T",
+    "4694.T", "4704.T", "4722.T", "4732.T", "4733.T", "4746.T",
     "4763.T", "4768.T", "4779.T", "4792.T",
-    # 鉄鋼・非鉄金属
+    # 鉄鋼・非鉄金属・資源
     "5401.T", "5411.T", "5713.T", "5802.T", "5706.T", "5423.T", "5440.T",
     "5463.T", "5702.T", "5727.T", "5741.T", "5743.T", "5803.T",
+    "5801.T", "5812.T", "5819.T", "5821.T", "5830.T", "5838.T",
     # 不動産
     "8801.T", "8802.T", "8830.T", "3003.T", "8804.T", "8803.T",
-    "3289.T", "3231.T", "3232.T", "3234.T", "3244.T", "3252.T",
-    "3261.T", "3263.T", "3264.T", "3267.T", "3277.T", "8905.T",
+    "3231.T", "3232.T", "3234.T", "3244.T", "3252.T",
+    "3261.T", "3263.T", "3264.T", "3267.T", "3277.T",
     # 建設・エンジニアリング
     "1801.T", "1802.T", "1803.T", "1925.T", "1928.T", "1812.T", "1820.T",
     "1826.T", "1963.T", "5233.T", "5244.T", "1808.T", "1824.T",
     "1860.T", "1878.T", "1893.T", "1911.T", "1944.T", "1961.T", "1983.T",
+    "1332.T", "1333.T", "1375.T", "1376.T", "1377.T", "1379.T",
     # 食品・飲料・タバコ
     "2502.T", "2503.T", "2587.T", "2269.T", "2201.T", "2914.T", "2802.T",
     "2282.T", "2264.T", "2593.T", "2211.T", "2212.T", "2213.T", "2221.T",
-    "2229.T", "2264.T", "2270.T", "2281.T", "2292.T", "2296.T", "2531.T",
-    "2579.T", "2594.T",
-    # 製薬・ヘルスケア
+    "2229.T", "2270.T", "2281.T", "2292.T", "2296.T", "2531.T",
+    "2579.T", "2594.T", "2871.T", "2897.T", "2004.T", "2006.T",
+    "2009.T", "2060.T", "2108.T", "2109.T", "2112.T", "2116.T",
+    # 製薬・医療・ヘルスケア
     "4568.T", "4519.T", "4506.T", "4507.T", "4523.T", "4578.T", "4151.T",
     "4502.T", "4503.T", "4516.T", "4528.T", "4530.T", "4535.T", "4536.T",
     "4540.T", "4544.T", "4549.T", "4550.T", "4554.T", "4556.T", "4563.T",
     "4564.T", "4569.T", "4571.T", "4574.T", "4576.T",
+    "7741.T", "7762.T", "4191.T", "4194.T", "4195.T", "4197.T",
     # ゲーム・エンタメ・メディア
     "7974.T", "9766.T", "9697.T", "2432.T", "9684.T", "3632.T", "3765.T",
-    "4344.T", "4755.T", "3735.T", "2137.T", "2378.T", "2464.T", "4751.T",
-    # 商社
+    "4344.T", "4751.T", "3735.T", "2137.T", "2378.T", "2464.T",
+    "4321.T", "4343.T", "4345.T", "4346.T", "4348.T", "4349.T",
+    # 商社・卸売
     "8058.T", "8053.T", "8031.T", "8001.T", "8002.T", "8015.T",
-    "8025.T", "8030.T", "8035.T", "8043.T", "8088.T", "9506.T",
-    # エネルギー・資源
-    "1605.T", "5019.T", "5020.T", "9531.T", "9532.T", "9502.T", "9503.T",
-    "9504.T", "9505.T",
-    # 物流・運輸
+    "8025.T", "8030.T", "8043.T", "8088.T",
+    "8011.T", "8012.T", "8013.T", "8016.T", "8020.T", "8021.T",
+    "8022.T", "8023.T", "8024.T", "8026.T", "8027.T", "8028.T",
+    # エネルギー・電力・ガス
+    "1605.T", "9531.T", "9532.T", "9502.T", "9503.T",
+    "9504.T", "9505.T", "9506.T", "9507.T", "9508.T", "9509.T",
+    # 物流・運輸・海運
     "9104.T", "9101.T", "9107.T", "9143.T", "9064.T", "9147.T",
     "9022.T", "9020.T", "9021.T", "9048.T",
-    # その他製造・機械
-    "6201.T", "6301.T", "6305.T", "6361.T", "6366.T", "6370.T",
-    "6374.T", "6378.T", "6381.T", "6382.T", "6391.T", "6395.T",
-    "6399.T", "6402.T", "6407.T", "6412.T", "6413.T",
+    "9301.T", "9303.T", "9308.T",
+    "9001.T", "9005.T", "9007.T", "9008.T", "9009.T",
+    # サービス・その他
+    "4911.T", "2413.T", "2491.T", "2497.T", "2498.T", "2499.T",
+    "2501.T", "6178.T", "6090.T", "6091.T", "6092.T", "6093.T",
+    "3391.T", "3393.T", "3396.T", "3398.T", "3399.T",
+    "9735.T", "9737.T", "9744.T", "9746.T", "9748.T",
 ]
 # 重複除去
-BROAD_UNIVERSE = list(dict.fromkeys(BROAD_UNIVERSE))
-
-# フォールバック（全銘柄取得失敗時の最小セット）
-FALLBACK_UNIVERSE = [
-    "7203.T", "6758.T", "9984.T", "6861.T", "8306.T",
-    "9432.T", "6367.T", "7974.T", "4063.T", "8035.T",
-]
+BROAD_UNIVERSE_FALLBACK = list(dict.fromkeys(BROAD_UNIVERSE_FALLBACK))
 
 
-# ── 広域ユニバースの高速事前スクリーニング ────────────────────────────────────
-
-def _fast_prescreen(universe: list[str], top_n: int = 50) -> tuple[list[str], str]:
+def _get_universe() -> list[str]:
     """
-    全ユニバースをバッチダウンロードで高速スクリーニング。
-    1日変化率・出来高比でスコアリングしてトップN銘柄を返す。
+    使用する銘柄ユニバースを返す。
+    J-Quants APIが利用可能なら全TSEプライム1800銘柄、なければフォールバックリスト。
+    """
+    from advisor.data import get_all_tse_prime_tickers
+    dynamic = get_all_tse_prime_tickers()
+    if dynamic and len(dynamic) > 100:
+        logger.info(f"J-Quants動的ユニバース使用: {len(dynamic)}銘柄")
+        return dynamic
+    logger.info(f"フォールバックユニバース使用: {len(BROAD_UNIVERSE_FALLBACK)}銘柄")
+    return BROAD_UNIVERSE_FALLBACK
+
+
+# ── 5因子複合スコアリングによる高速事前スクリーニング ─────────────────────────
+
+def _fast_prescreen(
+    universe: list[str],
+    available_cash: int = 0,
+    top_n: int = 60,
+) -> tuple[list[str], str]:
+    """
+    全ユニバースをバッチダウンロードで高速スクリーニング（約15〜40秒）。
+
+    【5因子複合スコア】（方向性・トレンド品質・出来高・ブレイクアウト・リバーサルを統合）
+    Factor1 買い圧力: max(0, chg1d) × vol_ratio  ← 上昇＋出来高が最重要
+    Factor2 トレンド品質ボーナス: 1.5 if close>MA5>MA25 else 0.7
+    Factor3 ブレイクアウトボーナス: 1.3 if close > 0.97×25d_high AND chg1d>0 else 1.0
+    Factor4 リバーサルスコア: max(0, -chg5d-7) × vol_ratio if vol_ratio>1.5
+            ← 5日間-7%超の急落後に出来高急増 = 底打ちシグナル
+    Factor5 異常出来高スコア: max(0, vol_ratio-1.5) × 0.3
+            ← 方向性不明でも出来高急増は何かが起きている証拠
+
+    流動性フィルタ（最低水準に設定し多すぎる除外を防ぐ）:
+    - 平均出来高 < 50,000株/日 → 除外（実質取引不能）
+    - 投資資金が設定されている場合: 株価 × 100株 > 資金×2 → 除外
+
     戻り値: (上位ティッカーリスト, スクリーナー向けサマリーテキスト)
     """
     import yfinance as yf
     import pandas as pd
-    import numpy as np
 
     logger.info(f"高速事前スクリーニング開始: {len(universe)}銘柄")
     try:
         data = yf.download(
             universe,
-            period="25d",
+            period="30d",
             auto_adjust=True,
             progress=False,
             group_by="ticker",
@@ -296,7 +341,10 @@ def _fast_prescreen(universe: list[str], top_n: int = 50) -> tuple[list[str], st
             logger.warning("yfinance一括DL: データなし。フォールバック使用。")
             return universe[:top_n], "データ取得失敗"
 
-        results = []
+        momentum_results = []
+        reversal_results = []
+        high_volume_results = []
+
         for ticker in universe:
             try:
                 if isinstance(data.columns, pd.MultiIndex):
@@ -309,59 +357,143 @@ def _fast_prescreen(universe: list[str], top_n: int = 50) -> tuple[list[str], st
                 close = t_data["Close"].dropna()
                 volume = t_data["Volume"].dropna()
 
-                if len(close) < 6:
+                if len(close) < 6 or len(volume) < 6:
                     continue
 
                 cur = float(close.iloc[-1])
                 prev = float(close.iloc[-2])
                 prev5 = float(close.iloc[-6]) if len(close) >= 6 else prev
                 vol_today = float(volume.iloc[-1])
-                vol_avg = float(volume.iloc[:-1].mean()) if len(volume) > 1 else vol_today
+                vol_avg20 = float(volume.iloc[-21:-1].mean()) if len(volume) >= 21 else float(volume.iloc[:-1].mean())
 
-                if cur <= 0 or prev <= 0 or vol_avg <= 0:
+                if cur <= 0 or prev <= 0 or vol_avg20 < 50000:
+                    continue  # 流動性フィルタ
+
+                # 投資資金フィルタ（100株購入コストが資金の2倍を超える場合除外）
+                if available_cash > 0 and cur * 100 > available_cash * 2:
                     continue
 
                 chg1d = (cur - prev) / prev * 100
                 chg5d = (cur - prev5) / prev5 * 100
-                vol_ratio = vol_today / vol_avg
+                vol_ratio = vol_today / vol_avg20 if vol_avg20 > 0 else 1.0
 
-                # スコア: 価格変動幅 × 出来高急増 （絶対値で注目度を測る）
-                score = (abs(chg1d) * 2 + abs(chg5d)) * (vol_ratio ** 0.5)
+                # MA計算
+                ma5 = float(close.iloc[-5:].mean()) if len(close) >= 5 else cur
+                ma25 = float(close.iloc[-25:].mean()) if len(close) >= 25 else cur
+                period_high = float(close.iloc[-25:].max()) if len(close) >= 25 else cur
 
-                results.append({
+                # Factor2: トレンド品質ボーナス
+                trend_bonus = 1.5 if (cur > ma5 and ma5 > ma25) else (0.7 if cur < ma25 else 1.0)
+
+                # Factor3: ブレイクアウトボーナス
+                breakout_bonus = 1.3 if (cur > 0.97 * period_high and chg1d > 0) else 1.0
+
+                # Factor1: 買い圧力スコア（上昇+出来高）
+                buy_pressure = max(0.0, chg1d) * vol_ratio
+
+                # モメンタムスコア
+                momentum_score = buy_pressure * trend_bonus * breakout_bonus
+
+                # Factor4: リバーサルスコア（急落後の出来高急増）
+                reversal_score = 0.0
+                if chg5d < -7 and vol_ratio > 1.5:
+                    reversal_score = abs(chg5d) * vol_ratio * 0.6
+
+                # Factor5: 異常出来高スコア（方向問わず）
+                vol_anomaly = max(0.0, vol_ratio - 1.5) * 0.3
+
+                row = {
                     "ticker": ticker,
                     "price": round(cur, 0),
                     "chg1d": round(chg1d, 2),
                     "chg5d": round(chg5d, 2),
                     "vol_ratio": round(vol_ratio, 2),
-                    "score": round(score, 3),
-                })
+                    "ma5_above_ma25": cur > ma5 > ma25,
+                    "near_breakout": cur > 0.97 * period_high,
+                    "momentum_score": round(momentum_score, 3),
+                    "reversal_score": round(reversal_score, 3),
+                    "vol_anomaly": round(vol_anomaly, 3),
+                }
+
+                if momentum_score > 0.5:
+                    momentum_results.append(row)
+                if reversal_score > 2.0:
+                    reversal_results.append(row)
+                if vol_anomaly > 0.5 and row not in momentum_results:
+                    high_volume_results.append(row)
+
             except Exception:
                 continue
 
-        if not results:
-            logger.warning("スコアリング結果なし。フォールバック使用。")
-            return universe[:top_n], "スコアリング失敗"
+        # ソート
+        momentum_results.sort(key=lambda x: x["momentum_score"], reverse=True)
+        reversal_results.sort(key=lambda x: x["reversal_score"], reverse=True)
+        high_volume_results.sort(key=lambda x: x["vol_anomaly"], reverse=True)
 
-        results.sort(key=lambda x: x["score"], reverse=True)
-        top = results[:top_n]
+        # モメンタム上位30 + リバーサル上位15 + 異常出来高上位15を組み合わせ
+        combined = {}
+        for r in momentum_results[:30]:
+            combined[r["ticker"]] = r
+        for r in reversal_results[:15]:
+            if r["ticker"] not in combined:
+                combined[r["ticker"]] = r
+        for r in high_volume_results[:15]:
+            if r["ticker"] not in combined:
+                combined[r["ticker"]] = r
+
+        top = list(combined.values())[:top_n]
         top_tickers = [r["ticker"] for r in top]
 
-        # スクリーナー向けサマリー（コンパクト表形式）
+        # サマリーテキスト生成（カテゴリ別）
         lines = [
-            f"## 全{len(universe)}銘柄スクリーニング → 注目上位{len(top)}銘柄",
-            "| ティッカー | 株価 | 1日変化 | 5日変化 | 出来高比 | スコア |",
-            "|---|---|---|---|---|---|",
+            f"## 全{len(universe)}銘柄 定量スクリーニング結果",
+            f"（流動性フィルタ適用後・モメンタム/リバーサル/異常出来高の3カテゴリ横断）",
+            "",
+            "### モメンタム候補（上昇トレンド＋出来高確認）",
+            "| ティッカー | 株価 | 1日変化 | 5日変化 | 出来高比 | トレンド | ブレイクアウト | スコア |",
+            "|---|---|---|---|---|---|---|---|",
         ]
-        for r in top:
+        for r in momentum_results[:25]:
+            trend_str = "↑上昇トレンド" if r["ma5_above_ma25"] else "-"
+            bo_str = "★近" if r["near_breakout"] else "-"
             lines.append(
                 f"| {r['ticker']} | {r['price']:,.0f}円 | "
                 f"{'+' if r['chg1d'] >= 0 else ''}{r['chg1d']}% | "
                 f"{'+' if r['chg5d'] >= 0 else ''}{r['chg5d']}% | "
-                f"{r['vol_ratio']}x | {r['score']} |"
+                f"{r['vol_ratio']}x | {trend_str} | {bo_str} | {r['momentum_score']} |"
             )
 
-        logger.info(f"高速事前スクリーニング完了: {len(results)}銘柄スコアリング → 上位{len(top)}銘柄抽出")
+        lines += [
+            "",
+            "### リバーサル候補（急落後の出来高急増＝底打ちシグナル）",
+            "| ティッカー | 株価 | 1日変化 | 5日変化 | 出来高比 | スコア |",
+            "|---|---|---|---|---|---|",
+        ]
+        for r in reversal_results[:15]:
+            lines.append(
+                f"| {r['ticker']} | {r['price']:,.0f}円 | "
+                f"{'+' if r['chg1d'] >= 0 else ''}{r['chg1d']}% | "
+                f"{r['chg5d']}% | {r['vol_ratio']}x | {r['reversal_score']} |"
+            )
+
+        if high_volume_results:
+            lines += [
+                "",
+                "### 異常出来高候補（方向性不明だが大口動き）",
+                "| ティッカー | 株価 | 1日変化 | 出来高比 |",
+                "|---|---|---|---|",
+            ]
+            for r in high_volume_results[:10]:
+                lines.append(
+                    f"| {r['ticker']} | {r['price']:,.0f}円 | "
+                    f"{'+' if r['chg1d'] >= 0 else ''}{r['chg1d']}% | {r['vol_ratio']}x |"
+                )
+
+        total_scored = len(momentum_results) + len(set(r["ticker"] for r in reversal_results) - set(r["ticker"] for r in momentum_results))
+        logger.info(
+            f"スクリーニング完了: モメンタム{len(momentum_results)}, "
+            f"リバーサル{len(reversal_results)}, 異常出来高{len(high_volume_results)} → 上位{len(top)}銘柄"
+        )
         return top_tickers, "\n".join(lines)
 
     except Exception as e:
@@ -486,11 +618,14 @@ def generate_proposal(settings: dict, portfolio: list[dict], history: list[dict]
     capital = settings["capital"]
 
     # ── Step 1a: 広域ユニバース高速事前スクリーニング ─────────────────────────
-    logger.info(f"Step1a: 広域スクリーニング開始（{len(BROAD_UNIVERSE)}銘柄）")
+    universe = _get_universe()
+    logger.info(f"Step1a: 広域スクリーニング開始（{len(universe)}銘柄）")
     held_tickers = [p["ticker"] for p in portfolio]
 
-    # 高速スクリーニング: 全ユニバースから注目上位50銘柄を抽出
-    top_tickers, prescreen_summary = _fast_prescreen(BROAD_UNIVERSE, top_n=50)
+    # 高速スクリーニング: 全ユニバースから注目上位60銘柄を抽出（5因子複合スコア）
+    top_tickers, prescreen_summary = _fast_prescreen(
+        universe, available_cash=current_cash, top_n=60
+    )
 
     # 保有銘柄は必ず含める（売り候補として分析が必要）
     prefetch_tickers = list(dict.fromkeys(top_tickers + held_tickers))

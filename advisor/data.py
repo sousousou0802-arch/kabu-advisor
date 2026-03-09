@@ -22,6 +22,38 @@ JQUANTS_BASE = "https://api.jquants.com/v1"
 
 # ── J-Quants ────────────────────────────────────────────────────────────────
 
+def get_all_tse_prime_tickers() -> list[str]:
+    """
+    J-Quants /v1/listed/info からTSEプライム全銘柄のティッカーリストを取得する。
+    失敗した場合は空リストを返す（フォールバックに委ねる）。
+    MarketCode: "0111"=TSEプライム, "0121"=TSEスタンダード, "0131"=TSEグロース
+    """
+    id_token = _jquants_id_token()
+    if not id_token:
+        return []
+    try:
+        headers = {"Authorization": f"Bearer {id_token}"}
+        res = requests.get(
+            f"{JQUANTS_BASE}/listed/info",
+            headers=headers,
+            timeout=30,
+        )
+        res.raise_for_status()
+        companies = res.json().get("info", [])
+        # TSEプライムのみ（MarketCode "0111"）、かつ普通株のみ
+        tickers = [
+            f"{c['Code'][:4]}.T"
+            for c in companies
+            if c.get("MarketCode") == "0111"
+            and c.get("Code", "").endswith("0")  # 末尾0=普通株
+        ]
+        logger.info(f"J-Quants: TSEプライム {len(tickers)}銘柄取得")
+        return tickers
+    except Exception as e:
+        logger.warning(f"J-Quants listed/info 取得失敗: {e}")
+        return []
+
+
 def _jquants_id_token() -> Optional[str]:
     refresh_token = os.getenv("JQUANTS_REFRESH_TOKEN", "")
     if not refresh_token or refresh_token == "your-jquants-token-here":
