@@ -228,7 +228,46 @@ def _extract_confidence(text: str) -> int:
 
 # ── メインエントリポイント ────────────────────────────────────────────────────
 
-def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
+def _format_history(history: list[dict]) -> str:
+    """
+    過去の提案・取引結果を「学習用レビュー」フォーマットに変換する。
+    直近5件を新しい順に表示。
+    """
+    if not history:
+        return "なし（初日）"
+
+    lines = []
+    for h in history[:5]:
+        lines.append(f"### {h['date']}")
+
+        # 提案の要点（最終提案の最初の200字）
+        proposal_preview = (h.get("final_proposal") or "")[:200]
+        lines.append(f"提案要点: {proposal_preview}...")
+
+        # 実際のトレード
+        trades = h.get("trades", [])
+        if trades:
+            for t in trades:
+                action_jp = {"buy": "買い", "sell": "売り", "hold": "見送り"}.get(t.get("action", ""), t.get("action", ""))
+                pnl = t.get("pnl")
+                pnl_str = f" 損益: {'+' if pnl and pnl >= 0 else ''}{pnl:,}円" if pnl is not None else ""
+                lines.append(
+                    f"  実行: {t.get('ticker')} {action_jp} "
+                    f"{t.get('shares', 0)}株 @{t.get('price', 0):,.0f}円{pnl_str}"
+                )
+        else:
+            lines.append("  実行: 未記録")
+
+        # 自信度
+        conf = h.get("confidence")
+        if conf:
+            lines.append(f"  自信度: {conf}%")
+
+        lines.append("")
+    return "\n".join(lines)
+
+
+def generate_proposal(settings: dict, portfolio: list[dict], history: list[dict] = None) -> dict:
     """
     マルチエージェント議論を実行し最終提案を返す。
 
@@ -242,6 +281,8 @@ def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
     """
     client = _get_client()
     today_str = date.today().isoformat()
+    history = history or []
+    history_text = _format_history(history)
 
     remaining_days = (date.fromisoformat(str(settings["deadline"])) - date.today()).days
     current_cash = settings["current_cash"]
@@ -292,6 +333,7 @@ def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
         remaining_days=remaining_days,
         portfolio_summary=portfolio_summary_text,
         market_info=full_market_info,
+        history=history_text,
     )
     screening_result = _call_agent(client, SCREENER_SYSTEM, screener_user)
 
@@ -388,6 +430,7 @@ def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
             bull_analysis=bull_analysis,
             bear_analysis=bear_analysis,
             risk_analysis=risk_analysis,
+            history=history_text,
         )
     )
 

@@ -146,8 +146,27 @@ def api_generate(db: Session = Depends(get_db)):
         "deadline": str(settings.deadline),
     }
 
+    # 過去履歴を取得（直近5件）
+    past_proposals = list_proposals(db, limit=5)
+    past_trades = list_trade_results(db, limit=30)
+    trades_by_proposal = {}
+    for t in past_trades:
+        trades_by_proposal.setdefault(t.proposal_id, []).append({
+            "ticker": t.ticker, "action": t.action,
+            "shares": t.shares, "price": t.price, "pnl": t.pnl,
+        })
+    history_list = [
+        {
+            "date": str(p.date),
+            "final_proposal": p.final_proposal,
+            "confidence": p.confidence,
+            "trades": trades_by_proposal.get(p.id, []),
+        }
+        for p in past_proposals
+    ]
+
     try:
-        result = generate_proposal(settings_dict, portfolio_list)
+        result = generate_proposal(settings_dict, portfolio_list, history_list)
     except Exception as e:
         logger.error(f"提案生成エラー: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
