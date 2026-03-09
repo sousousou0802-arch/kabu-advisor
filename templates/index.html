@@ -251,6 +251,16 @@ let proposalId = null;
     new Date().toLocaleDateString('ja-JP', {month:'long', day:'numeric', weekday:'short'});
   await loadStatus();
   await loadTodayProposal();
+  // ページ読み込み時にバックグラウンド生成中なら自動でポーリング再開
+  const s = await fetch('/api/generate/status').then(r => r.json()).catch(() => ({}));
+  if (s.status === 'running') {
+    const msg = document.getElementById('gen-msg');
+    const btn = document.getElementById('btn-gen');
+    btn.disabled = true;
+    msg.style.display = 'block';
+    msg.innerHTML = '<span class="spinner"></span>AIが分析中です（バックグラウンド継続中）...';
+    _startPolling(msg, btn);
+  }
 })();
 
 // ── タブ ──────────────────────────────────────────────────────────────────
@@ -321,26 +331,71 @@ async function loadTodayProposal() {
   if (data.found) displayProposal(data);
 }
 
-// ── 提案生成 ──────────────────────────────────────────────────────────────
+// ── 提案生成（バックグラウンド生成 + ポーリング）──────────────────────────
+let _pollTimer = null;
+
 async function generate() {
   const btn = document.getElementById('btn-gen');
   const msg = document.getElementById('gen-msg');
   btn.disabled = true;
   msg.style.display = 'block';
-  msg.innerHTML = '<span class="spinner"></span>AIが市場を分析中です（3〜5分かかります）...';
+  msg.innerHTML = '<span class="spinner"></span>AIが分析を開始しました（3〜5分かかります）...';
 
   try {
     const res = await fetch('/api/generate', { method: 'POST' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      msg.textContent = 'エラー: ' + (data.detail || '不明');
+      btn.disabled = false;
+      return;
+    }
     const data = await res.json();
-    if (!res.ok) { msg.textContent = 'エラー: ' + (data.detail || '不明'); btn.disabled = false; return; }
-    msg.style.display = 'none';
-    const detail = await fetch('/api/proposal/today').then(r => r.json());
-    if (detail.found) displayProposal(detail);
-    await loadStatus();
+    if (data.status === 'done') {
+      // キャッシュ済み
+      await _onGenerateDone();
+      return;
+    }
+    // バックグラウンドで生成中 → ポーリング開始
+    _startPolling(msg, btn);
   } catch(e) {
     msg.textContent = 'エラー: ' + e.message;
     btn.disabled = false;
   }
+}
+
+function _startPolling(msg, btn) {
+  let elapsed = 0;
+  if (_pollTimer) clearInterval(_pollTimer);
+  _pollTimer = setInterval(async () => {
+    elapsed += 15;
+    try {
+      const s = await fetch('/api/generate/status').then(r => r.json());
+      if (s.status === 'done') {
+        clearInterval(_pollTimer);
+        _pollTimer = null;
+        await _onGenerateDone();
+      } else if (s.status === 'error') {
+        clearInterval(_pollTimer);
+        _pollTimer = null;
+        msg.textContent = 'エラー: ' + (s.detail || '生成失敗');
+        btn.disabled = false;
+      } else {
+        msg.innerHTML = `<span class="spinner"></span>AIが分析中... (${elapsed}秒経過)`;
+      }
+    } catch(e) {
+      // ネットワーク一時エラーはスキップしてポーリング継続
+    }
+  }, 15000);
+}
+
+async function _onGenerateDone() {
+  const msg = document.getElementById('gen-msg');
+  const btn = document.getElementById('btn-gen');
+  msg.style.display = 'none';
+  const detail = await fetch('/api/proposal/today').then(r => r.json());
+  if (detail.found) displayProposal(detail);
+  await loadStatus();
+  btn.disabled = false;
 }
 
 // ── 提案表示 ──────────────────────────────────────────────────────────────

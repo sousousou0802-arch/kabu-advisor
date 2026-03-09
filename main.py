@@ -5,6 +5,7 @@ FastAPI エントリポイント
 import json
 import logging
 import os
+import threading
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 from typing import Optional
@@ -19,7 +20,7 @@ load_dotenv()
 
 from advisor.agents import generate_proposal
 from database.db import (
-    get_db, init_db,
+    get_db, init_db, SessionLocal,
     get_settings, upsert_settings,
     get_portfolio, add_position, reduce_position,
     save_proposal, get_proposal_by_date, get_latest_proposal, list_proposals,
@@ -40,6 +41,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="kabu-advisor", lifespan=lifespan)
+
+# バックグラウンド生成ジョブの状態管理（プロセス内メモリ）
+_job: dict = {"running": False, "error": None, "started_at": None}
 
 
 # ── HTML ──────────────────────────────────────────────────────────────────────
@@ -124,29 +128,25 @@ def api_generate(db: Session = Depends(get_db)):
     today = date.today()
     existing = get_proposal_by_date(db, today)
     if existing:
-        return {
-            "ok": True,
-            "cached": True,
-            "proposal_id": existing.id,
-            "final_proposal": existing.final_proposal,
-            "confidence": existing.confidence,
-        }
+        return {"ok": True, "status": "done", "proposal_id": existing.id}
 
+    # すでにバックグラウンドで生成中なら待機中を返す
+    if _job["running"]:
+        return {"ok": True, "status": "running"}
+
+    # バックグラウンドスレッドで生成開始（Renderの30秒タイムアウトを回避）
     portfolio = get_portfolio(db)
     portfolio_list = [
         {"ticker": p.ticker, "company_name": p.company_name,
          "shares": p.shares, "avg_price": p.avg_price}
         for p in portfolio
     ]
-
     settings_dict = {
         "capital": settings.capital,
         "current_cash": settings.current_cash,
         "target_amount": settings.target_amount,
         "deadline": str(settings.deadline),
     }
-
-    # 過去履歴を取得（直近5件）
     past_proposals = list_proposals(db, limit=5)
     past_trades = list_trade_results(db, limit=30)
     trades_by_proposal = {}
@@ -165,30 +165,46 @@ def api_generate(db: Session = Depends(get_db)):
         for p in past_proposals
     ]
 
-    try:
-        result = generate_proposal(settings_dict, portfolio_list, history_list)
-    except Exception as e:
-        logger.error(f"提案生成エラー: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    def _run():
+        _job["running"] = True
+        _job["error"] = None
+        _job["started_at"] = datetime.now().isoformat()
+        try:
+            result = generate_proposal(settings_dict, portfolio_list, history_list)
+            with SessionLocal() as bg_db:
+                save_proposal(bg_db, {
+                    "date": today,
+                    "raw_data": json.dumps(result["raw_data"], ensure_ascii=False),
+                    "screening_result": result["screening_result"],
+                    "bull_analysis": result["bull_analysis"],
+                    "bear_analysis": result["bear_analysis"],
+                    "risk_analysis": result["risk_analysis"],
+                    "final_proposal": result["final_proposal"],
+                    "confidence": result["confidence"],
+                })
+            logger.info("バックグラウンド提案生成完了")
+        except Exception as e:
+            logger.error(f"バックグラウンド提案生成エラー: {e}", exc_info=True)
+            _job["error"] = str(e)
+        finally:
+            _job["running"] = False
 
-    proposal = save_proposal(db, {
-        "date": today,
-        "raw_data": json.dumps(result["raw_data"], ensure_ascii=False),
-        "screening_result": result["screening_result"],
-        "bull_analysis": result["bull_analysis"],
-        "bear_analysis": result["bear_analysis"],
-        "risk_analysis": result["risk_analysis"],
-        "final_proposal": result["final_proposal"],
-        "confidence": result["confidence"],
-    })
+    threading.Thread(target=_run, daemon=True).start()
+    return {"ok": True, "status": "running"}
 
-    return {
-        "ok": True,
-        "cached": False,
-        "proposal_id": proposal.id,
-        "final_proposal": proposal.final_proposal,
-        "confidence": proposal.confidence,
-    }
+
+@app.get("/api/generate/status")
+def api_generate_status(db: Session = Depends(get_db)):
+    """バックグラウンド生成ジョブの状態を返す。フロントがポーリングで使用。"""
+    today = date.today()
+    existing = get_proposal_by_date(db, today)
+    if existing:
+        return {"status": "done", "proposal_id": existing.id}
+    if _job["error"]:
+        return {"status": "error", "detail": _job["error"]}
+    if _job["running"]:
+        return {"status": "running", "started_at": _job["started_at"]}
+    return {"status": "idle"}
 
 
 @app.get("/api/proposal/today")
