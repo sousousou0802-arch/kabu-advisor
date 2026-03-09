@@ -40,61 +40,68 @@ def _get_client() -> anthropic.Anthropic:
 
 # ── web_search ───────────────────────────────────────────────────────────────
 
-def _web_search(client: anthropic.Anthropic, queries: list[str], max_uses: int = 5) -> str:
+def _is_rate_limit(e: Exception) -> bool:
+    return "429" in str(e) or "rate_limit" in str(e).lower()
+
+
+def _api_call_with_retry(fn, label: str = ""):
+    """任意のAPI呼び出しを429 exponential backoffでラップする"""
+    max_retries = 6
+    wait = 90  # 初回90秒待機（トークンウィンドウのリセットを待つ）
+    for attempt in range(max_retries):
+        try:
+            return fn()
+        except Exception as e:
+            if not _is_rate_limit(e):
+                raise
+            if attempt == max_retries - 1:
+                raise
+            logger.warning(f"[{label}] 429 rate limit。{wait}秒後にリトライ ({attempt+1}/{max_retries})")
+            time.sleep(wait)
+            wait = int(wait * 1.5)
+
+
+def _web_search(client: anthropic.Anthropic, queries: list[str], max_uses: int = 2) -> str:
+    # クエリは最大2つに絞る（multi-turn tool useがトークンを急増させるため）
+    queries = queries[:max_uses]
     tool_def = {
         "type": "web_search_20250305",
         "name": "web_search",
-        "max_uses": min(max_uses, len(queries)),
+        "max_uses": max_uses,
     }
     query_list = "\n".join(f"- {q}" for q in queries)
-    prompt = f"""以下のクエリで順番にウェブ検索し、投資判断に役立つ数値・事実・最新情報を簡潔にまとめてください。各クエリの結果は200字以内で要点のみ記載してください。
+    prompt = f"以下を検索し、各結果を100字以内で要点のみ答えてください。\n{query_list}"
 
-{query_list}
-"""
-    max_retries = 5
-    wait = 60
-    for attempt in range(max_retries):
-        try:
-            response = client.messages.create(
-                model=MODEL,
-                max_tokens=2000,
-                tools=[tool_def],
-                messages=[{"role": "user", "content": prompt}],
-            )
-            texts = [b.text for b in response.content if hasattr(b, "text")]
-            return "\n\n".join(texts)
-        except anthropic.RateLimitError as e:
-            if attempt == max_retries - 1:
-                return f"（web_search失敗: レート制限）"
-            logger.warning(f"web_search 429。{wait}秒後にリトライ ({attempt+1}/{max_retries})")
-            time.sleep(wait)
-            wait *= 2
-        except Exception as e:
-            logger.warning(f"web_search失敗: {e}")
-            return f"（web_search失敗: {e}）"
+    def fn():
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=1000,
+            tools=[tool_def],
+            messages=[{"role": "user", "content": prompt}],
+        )
+        texts = [b.text for b in response.content if hasattr(b, "text")]
+        return "\n".join(texts)[:1500]  # 出力を1500文字に制限
+
+    try:
+        return _api_call_with_retry(fn, "web_search")
+    except Exception as e:
+        logger.warning(f"web_search失敗: {e}")
+        return "（web_search失敗）"
 
 
 # ── エージェント呼び出し ──────────────────────────────────────────────────────
 
 def _call_agent(client: anthropic.Anthropic, system: str, user: str) -> str:
-    """429レート制限に対してexponential backoffでリトライする"""
-    max_retries = 5
-    wait = 60  # 初回待機秒数
-    for attempt in range(max_retries):
-        try:
-            response = client.messages.create(
-                model=MODEL,
-                max_tokens=MAX_TOKENS,
-                system=system,
-                messages=[{"role": "user", "content": user}],
-            )
-            return response.content[0].text
-        except anthropic.RateLimitError as e:
-            if attempt == max_retries - 1:
-                raise
-            logger.warning(f"429 rate limit。{wait}秒後にリトライ ({attempt+1}/{max_retries}): {e}")
-            time.sleep(wait)
-            wait *= 2  # exponential backoff
+    def fn():
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=MAX_TOKENS,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+        return response.content[0].text
+
+    return _api_call_with_retry(fn, "agent")
 
 
 # ── ポートフォリオサマリー生成 ───────────────────────────────────────────────
@@ -205,13 +212,17 @@ def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
     # ── Step 1a: 市場情報をweb_searchで収集 ──────────────────────────────────
     logger.info("Step1: 市場情報web_search")
     market_queries = build_market_search_queries()
-    market_info = _web_search(client, market_queries, max_uses=7)
+    market_info = _web_search(client, market_queries[:2], max_uses=2)  # 2クエリのみ
 
-    # RSS市場ニュース
-    rss_news = get_market_news_rss()
-    rss_text = "\n".join(f"- {n['title']}: {n['summary']}" for n in rss_news)
+    # RSS市場ニュース（タイトルのみ、本文は含めない）
+    rss_news = get_market_news_rss(max_items=8)
+    rss_text = "\n".join(f"- {n['title']}" for n in rss_news)
 
-    full_market_info = f"{market_info}\n\n## Yahoo!ファイナンスRSSニュース\n{rss_text}"
+    full_market_info = f"{market_info}\n\n## 市場ニュース\n{rss_text}"
+    full_market_info = full_market_info[:2000]  # 2000文字に制限
+
+    logger.info("web_search完了。60秒待機...")
+    time.sleep(60)
 
     # ── Step 1b: スクリーナーエージェント ────────────────────────────────────
     logger.info("Step1b: スクリーナー実行")
@@ -240,16 +251,6 @@ def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
 
     # ── Step 1c: 候補銘柄の株価・ニュースを収集 ──────────────────────────────
     raw_data = collect_stock_data(all_tickers)
-
-    # 候補銘柄の個別web_search
-    for ticker in candidate_tickers[:3]:  # 上位3銘柄のみ（API節約）
-        code = ticker.replace(".T", "")
-        # スクリーニング結果から会社名を推測
-        company = code  # フォールバック
-        queries = build_stock_search_queries(code, company)
-        stock_search = _web_search(client, queries, max_uses=3)
-        if ticker in raw_data["stocks"]:
-            raw_data["stocks"][ticker]["web_search"] = stock_search
 
     # ポートフォリオサマリー（株価データ込み）
     portfolio_summary_text = _portfolio_summary(portfolio, raw_data)
