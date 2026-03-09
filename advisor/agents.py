@@ -428,65 +428,58 @@ def _fast_prescreen(
             "vol_anomaly": round(vol_anomaly, 3),
         }
 
-    # ── スコアリング実行（流動性フィルタを段階的に緩和） ──────────────────────
-    # まず5万株、候補が少なければ1万株、さらに少なければフィルタなしで再試行
+    # ── スコアリング実行（全銘柄を必ずスコアリング、閾値フィルタなし） ──────────
+    # 「閾値を超えた銘柄のみ」ではなく「全銘柄をスコアして上位を返す」設計。
+    # 下落相場でもchg1d < 0の銘柄が多くても、相対的に良い銘柄を抽出できる。
     min_vol_thresholds = [50000, 10000, 0]
-    momentum_results, reversal_results, high_volume_results = [], [], []
+    all_rows = []
 
     for min_vol in min_vol_thresholds:
-        momentum_results, reversal_results, high_volume_results = [], [], []
+        all_rows = []
         for ticker in universe:
             try:
                 row = _score_ticker(ticker, min_vol)
-                if row is None:
-                    continue
-                if row["momentum_score"] > 0.5:
-                    momentum_results.append(row)
-                if row["reversal_score"] > 2.0:
-                    reversal_results.append(row)
-                if row["vol_anomaly"] > 0.5:
-                    high_volume_results.append(row)
+                if row is not None:
+                    all_rows.append(row)
             except Exception:
                 continue
-
-        total = len(set(
-            [r["ticker"] for r in momentum_results] +
-            [r["ticker"] for r in reversal_results] +
-            [r["ticker"] for r in high_volume_results]
-        ))
-        if total >= 20:
-            logger.info(f"スコアリング完了 (流動性フィルタ={min_vol:,}株): 有効銘柄{total}件")
+        if len(all_rows) >= 20:
+            logger.info(f"スコアリング完了 (流動性フィルタ={min_vol:,}株): {len(all_rows)}銘柄")
             break
-        logger.warning(f"流動性フィルタ{min_vol:,}株で候補{total}件 → 緩和して再試行")
+        logger.warning(f"流動性フィルタ{min_vol:,}株で{len(all_rows)}銘柄 → 緩和して再試行")
 
-    # ── 最終的に候補が少なすぎる場合は全銘柄をスコアなしで返す ──────────────
-    all_scored = {r["ticker"]: r for r in momentum_results}
-    for r in reversal_results + high_volume_results:
-        all_scored.setdefault(r["ticker"], r)
+    if not all_rows:
+        logger.warning("スコアリング結果なし。ユニバース先頭をそのまま使用。")
+        return universe[:top_n], "データ取得失敗（市場休場またはyfinance接続不可）"
 
-    if len(all_scored) < 15:
-        logger.warning(f"スコアリング結果が{len(all_scored)}件のみ。上位銘柄をそのまま使用。")
-        top_tickers = universe[:top_n]
-        return top_tickers, "スコアリング候補不足（市場休場またはデータ取得問題）"
+    # ── 3カテゴリに分類してそれぞれ上位を抽出 ────────────────────────────────
+    # カテゴリ1: モメンタム（買い圧力スコア上位 - 下落相場では最も下落幅の小さいものが上位）
+    # カテゴリ2: リバーサル（5日間大幅下落後の出来高急増 - 底打ち候補）
+    # カテゴリ3: 相対強度（市場全体が下落でも上昇した銘柄 or 出来高異常）
 
-    # ソート
-    momentum_results.sort(key=lambda x: x["momentum_score"], reverse=True)
-    reversal_results.sort(key=lambda x: x["reversal_score"], reverse=True)
-    high_volume_results.sort(key=lambda x: x["vol_anomaly"], reverse=True)
+    momentum_cat = sorted(all_rows, key=lambda x: x["momentum_score"], reverse=True)
+    reversal_cat = sorted(
+        [r for r in all_rows if r["chg5d"] < -5],
+        key=lambda x: x["reversal_score"] + x["vol_ratio"],
+        reverse=True
+    )
+    # 相対強度: 上昇銘柄 > 横ばい > 下落の少ない順
+    relative_cat = sorted(all_rows, key=lambda x: (x["chg1d"], x["vol_ratio"]), reverse=True)
 
-    # モメンタム上位30 + リバーサル上位15 + 異常出来高上位15を組み合わせ
     combined = {}
-    for r in momentum_results[:30]:
+    for r in momentum_cat[:30]:
         combined[r["ticker"]] = r
-    for r in reversal_results[:15]:
+    for r in reversal_cat[:15]:
         if r["ticker"] not in combined:
             combined[r["ticker"]] = r
-    for r in high_volume_results[:15]:
+    for r in relative_cat[:15]:
         if r["ticker"] not in combined:
             combined[r["ticker"]] = r
 
     top = list(combined.values())[:top_n]
     top_tickers = [r["ticker"] for r in top]
+
+    logger.info(f"候補抽出: モメンタム上位{min(30,len(momentum_cat))} + リバーサル候補{len(reversal_cat)} + 相対強度上位から計{len(top)}銘柄")
 
     # サマリーテキスト生成（カテゴリ別）
     lines = [
@@ -497,7 +490,7 @@ def _fast_prescreen(
         "| ティッカー | 株価 | 1日変化 | 5日変化 | 出来高比 | トレンド | ブレイクアウト | スコア |",
         "|---|---|---|---|---|---|---|---|",
     ]
-    for r in momentum_results[:25]:
+    for r in momentum_cat[:25]:
         trend_str = "↑上昇トレンド" if r["ma5_above_ma25"] else "-"
         bo_str = "★近" if r["near_breakout"] else "-"
         lines.append(
@@ -509,34 +502,34 @@ def _fast_prescreen(
 
     lines += [
         "",
-        "### リバーサル候補（急落後の出来高急増＝底打ちシグナル）",
-        "| ティッカー | 株価 | 1日変化 | 5日変化 | 出来高比 | スコア |",
-        "|---|---|---|---|---|---|",
+        "### リバーサル候補（5日間急落後の出来高急増＝底打ち可能性）",
+        "| ティッカー | 株価 | 1日変化 | 5日変化 | 出来高比 |",
+        "|---|---|---|---|---|",
     ]
-    for r in reversal_results[:15]:
+    for r in reversal_cat[:15]:
         lines.append(
             f"| {r['ticker']} | {r['price']:,.0f}円 | "
             f"{'+' if r['chg1d'] >= 0 else ''}{r['chg1d']}% | "
-            f"{r['chg5d']}% | {r['vol_ratio']}x | {r['reversal_score']} |"
+            f"{r['chg5d']}% | {r['vol_ratio']}x |"
         )
 
-    if high_volume_results:
-        lines += [
-            "",
-            "### 異常出来高候補（方向性不明だが大口動き）",
-            "| ティッカー | 株価 | 1日変化 | 出来高比 |",
-            "|---|---|---|---|",
-        ]
-        for r in high_volume_results[:10]:
+    lines += [
+        "",
+        "### 相対強度上位（市場全体との比較で強い動き）",
+        "| ティッカー | 株価 | 1日変化 | 5日変化 | 出来高比 | トレンド |",
+        "|---|---|---|---|---|---|",
+    ]
+    shown = set(r["ticker"] for r in top[:30])
+    for r in relative_cat[:15]:
+        if r["ticker"] not in shown:
+            trend_str = "↑上昇トレンド" if r["ma5_above_ma25"] else "-"
             lines.append(
                 f"| {r['ticker']} | {r['price']:,.0f}円 | "
-                f"{'+' if r['chg1d'] >= 0 else ''}{r['chg1d']}% | {r['vol_ratio']}x |"
+                f"{'+' if r['chg1d'] >= 0 else ''}{r['chg1d']}% | "
+                f"{'+' if r['chg5d'] >= 0 else ''}{r['chg5d']}% | "
+                f"{r['vol_ratio']}x | {trend_str} |"
             )
 
-    logger.info(
-        f"スクリーニング完了: モメンタム{len(momentum_results)}, "
-        f"リバーサル{len(reversal_results)}, 異常出来高{len(high_volume_results)} → 上位{len(top)}銘柄"
-    )
     return top_tickers, "\n".join(lines)
 
 # ── 候補銘柄をスクリーニング結果からパース ─────────────────────────────────
