@@ -141,44 +141,79 @@ def _calc_macd(series: pd.Series) -> dict:
     return {"macd": _v(macd_line), "signal": _v(signal), "histogram": _v(hist)}
 
 
-def get_stock_data(ticker: str) -> dict:
+def _extract_ohlcv(batch_data: pd.DataFrame, ticker: str) -> tuple[pd.Series, pd.Series] | None:
+    """
+    yf.download() のバッチ結果から指定ティッカーの (close, volume) を取得する。
+    yfinance バージョンによってMultiIndexの列順が異なるため両方に対応:
+    - group_by="ticker" 形式: (ticker, price_type) → data[ticker]["Close"]
+    - デフォルト形式:          (price_type, ticker) → data["Close"][ticker]
+    - 単一銘柄形式:             data["Close"]
+    """
+    if batch_data is None or batch_data.empty:
+        return None
+
     try:
-        stock = yf.Ticker(ticker)
-        hist = stock.history(period="6mo")
-        if hist.empty:
-            return {"error": "株価データなし", "ticker": ticker}
-        close = hist["Close"]
-        volume = hist["Volume"]
-        ma5 = close.rolling(5).mean()
-        ma25 = close.rolling(25).mean()
-        ma75 = close.rolling(75).mean()
-        def _last(s):
-            v = s.iloc[-1]
-            return round(float(v), 2) if not math.isnan(float(v)) else None
-        vol_ma20 = volume.rolling(20).mean()
-        vol_ratio = round(float(volume.iloc[-1] / vol_ma20.iloc[-1]), 2) if vol_ma20.iloc[-1] else None
-        year_data = stock.history(period="1y")
-        week52_high = round(float(year_data["Close"].max()), 2) if not year_data.empty else None
-        week52_low = round(float(year_data["Close"].min()), 2) if not year_data.empty else None
-        info = stock.fast_info
-        current_price = round(float(info.last_price), 2) if hasattr(info, "last_price") and info.last_price else _last(close)
-        return {
-            "ticker": ticker,
-            "current_price": current_price,
-            "price_change_pct": round(float((close.iloc[-1] - close.iloc[-2]) / close.iloc[-2] * 100), 2) if len(close) >= 2 else None,
-            "ma5": _last(ma5),
-            "ma25": _last(ma25),
-            "ma75": _last(ma75),
-            "rsi14": _calc_rsi(close),
-            "macd": _calc_macd(close),
-            "volume_latest": int(volume.iloc[-1]),
-            "volume_ma20_ratio": vol_ratio,
-            "week52_high": week52_high,
-            "week52_low": week52_low,
-        }
+        if not isinstance(batch_data.columns, pd.MultiIndex):
+            # 単一銘柄の場合
+            close = batch_data["Close"].dropna()
+            volume = batch_data["Volume"].dropna()
+            if not close.empty:
+                return close, volume
+            return None
+
+        level0 = batch_data.columns.get_level_values(0).unique().tolist()
+        level1 = batch_data.columns.get_level_values(1).unique().tolist()
+
+        if ticker in level0:
+            # (ticker, price_type) 形式
+            t_df = batch_data[ticker]
+            close = t_df["Close"].dropna()
+            volume = t_df["Volume"].dropna()
+        elif ticker in level1:
+            # (price_type, ticker) 形式
+            close = batch_data["Close"][ticker].dropna()
+            volume = batch_data["Volume"][ticker].dropna()
+        else:
+            return None
+
+        if close.empty or len(close) < 2:
+            return None
+        return close, volume
+
     except Exception as e:
-        logger.error(f"yfinance取得エラー ({ticker}): {e}")
-        return {"error": str(e), "ticker": ticker}
+        logger.debug(f"_extract_ohlcv ({ticker}): {e}")
+        return None
+
+
+def _technical_from_df(ticker: str, close: pd.Series, volume: pd.Series) -> dict:
+    """close/volumeのSeriesからテクニカル指標を計算する"""
+    def _last(s):
+        v = s.iloc[-1]
+        return round(float(v), 2) if not math.isnan(float(v)) else None
+
+    ma5 = close.rolling(5).mean()
+    ma25 = close.rolling(25).mean()
+    ma75 = close.rolling(75).mean()
+    vol_ma20 = volume.rolling(20).mean()
+    vol_ratio = round(float(volume.iloc[-1] / vol_ma20.iloc[-1]), 2) if vol_ma20.iloc[-1] else None
+    week52_high = round(float(close.max()), 2)
+    week52_low = round(float(close.min()), 2)
+    price_chg = round(float((close.iloc[-1] - close.iloc[-2]) / close.iloc[-2] * 100), 2) if len(close) >= 2 else None
+
+    return {
+        "ticker": ticker,
+        "current_price": _last(close),
+        "price_change_pct": price_chg,
+        "ma5": _last(ma5),
+        "ma25": _last(ma25),
+        "ma75": _last(ma75),
+        "rsi14": _calc_rsi(close),
+        "macd": _calc_macd(close),
+        "volume_latest": int(volume.iloc[-1]),
+        "volume_ma20_ratio": vol_ratio,
+        "week52_high": week52_high,
+        "week52_low": week52_low,
+    }
 
 
 # ── RSS ─────────────────────────────────────────────────────────────────────
@@ -212,12 +247,46 @@ def get_market_news_rss(max_items: int = 15) -> list[dict]:
 # ── 複数銘柄データ収集 ───────────────────────────────────────────────────────
 
 def collect_stock_data(tickers: list[str]) -> dict:
-    """指定銘柄の株価・ニュースを収集"""
+    """
+    指定銘柄の株価・テクニカル指標・ファンダメンタル・ニュースを収集。
+    yf.download() バッチAPIを使用（yf.Ticker().history()より安定）。
+    """
     result = {"collected_at": datetime.now().isoformat(), "stocks": {}}
+    if not tickers:
+        return result
+
+    # ── バッチ株価ダウンロード（1年分）────────────────────────────────────────
+    batch_data = None
+    try:
+        batch_data = yf.download(
+            tickers,
+            period="1y",
+            auto_adjust=True,
+            progress=False,
+            group_by="ticker",
+        )
+        logger.info(f"バッチDL完了: {len(tickers)}銘柄")
+    except Exception as e:
+        logger.error(f"バッチDL失敗: {e}")
+
+    # ── 銘柄ごとにテクニカル計算 + ファンダメンタル + ニュース ────────────────
     for ticker in tickers:
+        technical = {"error": "データ取得失敗", "ticker": ticker}
+        try:
+            ohlcv = _extract_ohlcv(batch_data, ticker)
+            if ohlcv is not None:
+                close, volume = ohlcv
+                technical = _technical_from_df(ticker, close, volume)
+        except Exception as e:
+            logger.error(f"テクニカル計算エラー ({ticker}): {e}")
+            technical = {"error": str(e), "ticker": ticker}
+
         result["stocks"][ticker] = {
-            "technical": get_stock_data(ticker),
+            "technical": technical,
             "fundamental": get_fundamental_data(ticker),
             "news": get_news_rss(ticker),
         }
+
+    success = sum(1 for v in result["stocks"].values() if "error" not in v.get("technical", {}) and v["technical"].get("current_price") is not None)
+    logger.info(f"データ収集完了: {success}/{len(tickers)}銘柄 成功")
     return result

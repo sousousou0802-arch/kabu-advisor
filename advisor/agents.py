@@ -357,19 +357,26 @@ def _fast_prescreen(
 
     # ── 各銘柄のデータを抽出してスコアリング ──────────────────────────────────
     def _extract_ticker_data(ticker: str) -> tuple | None:
-        """チャンクデータからティッカーのclose/volumeを抽出する"""
+        """チャンクデータからティッカーのclose/volumeを抽出する（列順不問）"""
         for chunk_tickers, data in all_data_frames:
             if ticker not in chunk_tickers:
                 continue
             try:
-                if isinstance(data.columns, pd.MultiIndex):
-                    if ticker not in data.columns.get_level_values(0):
-                        continue
-                    t_data = data[ticker]
+                if not isinstance(data.columns, pd.MultiIndex):
+                    close = data["Close"].dropna()
+                    volume = data["Volume"].dropna()
                 else:
-                    t_data = data
-                close = t_data["Close"].dropna()
-                volume = t_data["Volume"].dropna()
+                    l0 = data.columns.get_level_values(0).unique().tolist()
+                    l1 = data.columns.get_level_values(1).unique().tolist()
+                    if ticker in l0:
+                        t_data = data[ticker]
+                        close = t_data["Close"].dropna()
+                        volume = t_data["Volume"].dropna()
+                    elif ticker in l1:
+                        close = data["Close"][ticker].dropna()
+                        volume = data["Volume"][ticker].dropna()
+                    else:
+                        continue
                 if len(close) >= 6 and len(volume) >= 6:
                     return close, volume
             except Exception:
