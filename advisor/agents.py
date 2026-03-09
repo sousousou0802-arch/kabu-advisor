@@ -61,32 +61,37 @@ def _api_call_with_retry(fn, label: str = ""):
             wait = int(wait * 1.5)
 
 
-def _web_search(client: anthropic.Anthropic, queries: list[str], max_uses: int = 2) -> str:
-    # クエリは最大2つに絞る（multi-turn tool useがトークンを急増させるため）
-    queries = queries[:max_uses]
-    tool_def = {
-        "type": "web_search_20250305",
-        "name": "web_search",
-        "max_uses": max_uses,
-    }
-    query_list = "\n".join(f"- {q}" for q in queries)
-    prompt = f"以下を検索し、各結果を100字以内で要点のみ答えてください。\n{query_list}"
+def _web_search(client: anthropic.Anthropic, queries: list[str], max_uses: int = 5) -> str:
+    """web_searchツールで複数クエリを検索する。各クエリを個別に呼び出してトークンを分散させる。"""
+    results = []
+    for query in queries[:max_uses]:
+        tool_def = {
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "max_uses": 1,
+        }
+        prompt = f"次のクエリで検索し、投資判断に役立つ情報を答えてください: {query}"
 
-    def fn():
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=1000,
-            tools=[tool_def],
-            messages=[{"role": "user", "content": prompt}],
-        )
-        texts = [b.text for b in response.content if hasattr(b, "text")]
-        return "\n".join(texts)[:1500]  # 出力を1500文字に制限
+        def fn(q=query, td=tool_def, p=prompt):
+            response = client.messages.create(
+                model=MODEL,
+                max_tokens=1500,
+                tools=[td],
+                messages=[{"role": "user", "content": p}],
+            )
+            texts = [b.text for b in response.content if hasattr(b, "text")]
+            return "\n".join(texts)
 
-    try:
-        return _api_call_with_retry(fn, "web_search")
-    except Exception as e:
-        logger.warning(f"web_search失敗: {e}")
-        return "（web_search失敗）"
+        try:
+            result = _api_call_with_retry(fn, f"web_search:{query[:20]}")
+            results.append(f"【{query}】\n{result}")
+        except Exception as e:
+            logger.warning(f"web_search失敗 ({query}): {e}")
+            results.append(f"【{query}】\n（取得失敗）")
+
+        time.sleep(65)  # 各クエリ間で65秒待機（1分ウィンドウをリセット）
+
+    return "\n\n".join(results)
 
 
 # ── エージェント呼び出し ──────────────────────────────────────────────────────
@@ -229,31 +234,31 @@ def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
     target_amount = settings["target_amount"]
     capital = settings["capital"]
 
-    # ── Step 1a: 市場情報をweb_searchで収集 ──────────────────────────────────
-    logger.info("Step1: 市場情報web_search")
-    market_queries = build_market_search_queries()
-    market_info = _web_search(client, market_queries[:2], max_uses=2)  # 2クエリのみ
-
-    # RSS市場ニュース（タイトルのみ、本文は含めない）
-    rss_news = get_market_news_rss(max_items=8)
-    rss_text = "\n".join(f"- {n['title']}" for n in rss_news)
-
-    full_market_info = f"{market_info}\n\n## 市場ニュース\n{rss_text}"
-    full_market_info = full_market_info[:2000]  # 2000文字に制限
-
-    # ── Step 1b: フォールバックユニバースのyfinance/RSSデータを先に収集 ────────
-    logger.info("Step1b: フォールバックユニバース + 保有銘柄のデータ収集")
+    # ── Step 1a: フォールバックユニバース + 保有銘柄のyfinance/RSSデータを収集 ──
+    logger.info("Step1a: 株価・ニュースデータ収集")
     held_tickers = [p["ticker"] for p in portfolio]
-    prefetch_tickers = list(dict.fromkeys(FALLBACK_UNIVERSE[:5] + held_tickers))
+    prefetch_tickers = list(dict.fromkeys(FALLBACK_UNIVERSE + held_tickers))
     raw_data = collect_stock_data(prefetch_tickers)
-
-    # フォールバックデータのサマリーをmarket_infoに追加
     fallback_summary = _format_data_for_agents(raw_data)
-    full_market_info = f"{full_market_info}\n\n## 主要銘柄の株価データ\n{fallback_summary}"
-    full_market_info = full_market_info[:3000]
 
-    logger.info("web_search完了。60秒待機...")
-    time.sleep(60)
+    # ── Step 1b: 市場情報をweb_searchで網羅的に収集 ───────────────────────────
+    # 各クエリ間に65秒sleep → 1分トークンウィンドウをリセットして情報を制限しない
+    logger.info("Step1b: 市場情報web_search（全クエリ）")
+    market_queries = build_market_search_queries()
+    market_info = _web_search(client, market_queries, max_uses=5)
+
+    # RSS市場ニュース（全文）
+    rss_news = get_market_news_rss(max_items=15)
+    rss_text = "\n".join(f"- {n['title']}: {n['summary']}" for n in rss_news)
+
+    full_market_info = (
+        f"## web検索結果\n{market_info}\n\n"
+        f"## 市場ニュース（RSS）\n{rss_text}\n\n"
+        f"## 主要銘柄の株価データ\n{fallback_summary}"
+    )
+
+    logger.info("Step1b完了。65秒待機...")
+    time.sleep(65)
 
     # ── Step 1c: スクリーナーエージェント ────────────────────────────────────
     logger.info("Step1c: スクリーナー実行")
@@ -269,8 +274,8 @@ def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
     )
     screening_result = _call_agent(client, SCREENER_SYSTEM, screener_user)
 
-    logger.info("スクリーナー完了。30秒待機...")
-    time.sleep(30)
+    logger.info("スクリーナー完了。65秒待機...")
+    time.sleep(65)
 
     # 候補銘柄を抽出（フォールバック込み）
     candidate_tickers = _parse_candidates(screening_result)
@@ -298,7 +303,7 @@ def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
         f"期日: {settings['deadline']}（残り{remaining_days}日）\n"
         f"今日: {today_str}"
     )
-    # JSONをそのまま渡さずテキストサマリーに変換（トークン節約）
+    # 候補銘柄の完全データ（テキスト形式）をエージェントに渡す
     data_text = _format_data_for_agents(raw_data)
 
     # ── Step 2: 強気アナリスト ────────────────────────────────────────────────
@@ -312,8 +317,8 @@ def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
         )
     )
 
-    logger.info("Step2完了。30秒待機...")
-    time.sleep(30)
+    logger.info("Step2完了。65秒待機...")
+    time.sleep(65)
 
     # ── Step 3: 弱気アナリスト ────────────────────────────────────────────────
     logger.info("Step3: 弱気アナリスト")
@@ -326,8 +331,8 @@ def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
         )
     )
 
-    logger.info("Step3完了。30秒待機...")
-    time.sleep(30)
+    logger.info("Step3完了。65秒待機...")
+    time.sleep(65)
 
     # ── Step 4: リスク管理官 ──────────────────────────────────────────────────
     logger.info("Step4: リスク管理官")
@@ -346,8 +351,8 @@ def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
         )
     )
 
-    logger.info("Step4完了。30秒待機...")
-    time.sleep(30)
+    logger.info("Step4完了。65秒待機...")
+    time.sleep(65)
 
     # ── Step 5: モデレーター ──────────────────────────────────────────────────
     logger.info("Step5: モデレーター統合")
