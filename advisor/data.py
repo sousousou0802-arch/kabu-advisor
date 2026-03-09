@@ -39,14 +39,21 @@ def get_all_tse_prime_tickers() -> list[str]:
             timeout=30,
         )
         res.raise_for_status()
-        companies = res.json().get("info", [])
-        # TSEプライムのみ（MarketCode "0111"）、かつ普通株のみ
-        tickers = [
-            f"{c['Code'][:4]}.T"
-            for c in companies
-            if c.get("MarketCode") == "0111"
-            and c.get("Code", "").endswith("0")  # 末尾0=普通株
-        ]
+        raw = res.json()
+        companies = raw.get("info", [])
+        if not companies or not isinstance(companies, list):
+            logger.warning(f"J-Quants listed/info: 予期しないレスポンス形式 keys={list(raw.keys())}")
+            return []
+        tickers = []
+        for c in companies:
+            code = c.get("Code", "")
+            market = c.get("MarketCode", "") or c.get("Market", "") or c.get("market_code", "")
+            # TSEプライム判定: MarketCode "0111" または "Prime"を含む文字列
+            is_prime = (market == "0111") or ("prime" in str(market).lower()) or ("プライム" in str(market))
+            # 普通株判定: コード末尾0
+            is_common = len(code) >= 4 and code.endswith("0")
+            if is_prime and is_common:
+                tickers.append(f"{code[:4]}.T")
         logger.info(f"J-Quants: TSEプライム {len(tickers)}銘柄取得")
         return tickers
     except Exception as e:

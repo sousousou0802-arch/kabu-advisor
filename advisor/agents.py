@@ -329,23 +329,38 @@ def _fast_prescreen(
     import pandas as pd
 
     logger.info(f"高速事前スクリーニング開始: {len(universe)}銘柄")
-    try:
-        data = yf.download(
-            universe,
-            period="30d",
-            auto_adjust=True,
-            progress=False,
-            group_by="ticker",
-        )
-        if data.empty:
-            logger.warning("yfinance一括DL: データなし。フォールバック使用。")
-            return universe[:top_n], "データ取得失敗"
 
-        momentum_results = []
-        reversal_results = []
-        high_volume_results = []
+    # ── チャンク分割ダウンロード（500銘柄ずつ）────────────────────────────────
+    # 一括DLはメモリ/タイムアウトリスクがあるため500銘柄単位で分割
+    CHUNK = 500
+    all_data_frames = []
+    chunks = [universe[i:i+CHUNK] for i in range(0, len(universe), CHUNK)]
+    for i, chunk in enumerate(chunks):
+        try:
+            chunk_data = yf.download(
+                chunk,
+                period="30d",
+                auto_adjust=True,
+                progress=False,
+                group_by="ticker",
+            )
+            if not chunk_data.empty:
+                all_data_frames.append((chunk, chunk_data))
+            logger.info(f"チャンク{i+1}/{len(chunks)} ダウンロード完了 ({len(chunk)}銘柄)")
+        except Exception as e:
+            logger.warning(f"チャンク{i+1}ダウンロード失敗: {e}")
+            continue
 
-        for ticker in universe:
+    if not all_data_frames:
+        logger.warning("全チャンクDL失敗。フォールバック使用。")
+        return universe[:top_n], "データ取得失敗（yfinance接続不可）"
+
+    # ── 各銘柄のデータを抽出してスコアリング ──────────────────────────────────
+    def _extract_ticker_data(ticker: str) -> tuple | None:
+        """チャンクデータからティッカーのclose/volumeを抽出する"""
+        for chunk_tickers, data in all_data_frames:
+            if ticker not in chunk_tickers:
+                continue
             try:
                 if isinstance(data.columns, pd.MultiIndex):
                     if ticker not in data.columns.get_level_values(0):
@@ -353,152 +368,169 @@ def _fast_prescreen(
                     t_data = data[ticker]
                 else:
                     t_data = data
-
                 close = t_data["Close"].dropna()
                 volume = t_data["Volume"].dropna()
+                if len(close) >= 6 and len(volume) >= 6:
+                    return close, volume
+            except Exception:
+                continue
+        return None
 
-                if len(close) < 6 or len(volume) < 6:
+    def _score_ticker(ticker: str, min_vol: float) -> dict | None:
+        """1銘柄をスコアリングして辞書を返す。フィルタに引っかかればNone。"""
+        extracted = _extract_ticker_data(ticker)
+        if extracted is None:
+            return None
+        close, volume = extracted
+
+        cur = float(close.iloc[-1])
+        prev = float(close.iloc[-2])
+        prev5 = float(close.iloc[-6]) if len(close) >= 6 else prev
+        vol_today = float(volume.iloc[-1])
+        vol_avg20 = float(volume.iloc[-21:-1].mean()) if len(volume) >= 21 else float(volume.iloc[:-1].mean())
+
+        if cur <= 0 or prev <= 0 or vol_avg20 < min_vol:
+            return None
+        if available_cash > 0 and cur * 100 > available_cash * 2:
+            return None
+
+        chg1d = (cur - prev) / prev * 100
+        chg5d = (cur - prev5) / prev5 * 100
+        vol_ratio = vol_today / vol_avg20 if vol_avg20 > 0 else 1.0
+        ma5 = float(close.iloc[-5:].mean()) if len(close) >= 5 else cur
+        ma25 = float(close.iloc[-25:].mean()) if len(close) >= 25 else cur
+        period_high = float(close.iloc[-25:].max()) if len(close) >= 25 else cur
+
+        trend_bonus = 1.5 if (cur > ma5 and ma5 > ma25) else (0.7 if cur < ma25 else 1.0)
+        breakout_bonus = 1.3 if (cur > 0.97 * period_high and chg1d > 0) else 1.0
+        buy_pressure = max(0.0, chg1d) * vol_ratio
+        momentum_score = buy_pressure * trend_bonus * breakout_bonus
+        reversal_score = abs(chg5d) * vol_ratio * 0.6 if (chg5d < -7 and vol_ratio > 1.5) else 0.0
+        vol_anomaly = max(0.0, vol_ratio - 1.5) * 0.3
+
+        return {
+            "ticker": ticker,
+            "price": round(cur, 0),
+            "chg1d": round(chg1d, 2),
+            "chg5d": round(chg5d, 2),
+            "vol_ratio": round(vol_ratio, 2),
+            "ma5_above_ma25": cur > ma5 > ma25,
+            "near_breakout": cur > 0.97 * period_high,
+            "momentum_score": round(momentum_score, 3),
+            "reversal_score": round(reversal_score, 3),
+            "vol_anomaly": round(vol_anomaly, 3),
+        }
+
+    # ── スコアリング実行（流動性フィルタを段階的に緩和） ──────────────────────
+    # まず5万株、候補が少なければ1万株、さらに少なければフィルタなしで再試行
+    min_vol_thresholds = [50000, 10000, 0]
+    momentum_results, reversal_results, high_volume_results = [], [], []
+
+    for min_vol in min_vol_thresholds:
+        momentum_results, reversal_results, high_volume_results = [], [], []
+        for ticker in universe:
+            try:
+                row = _score_ticker(ticker, min_vol)
+                if row is None:
                     continue
-
-                cur = float(close.iloc[-1])
-                prev = float(close.iloc[-2])
-                prev5 = float(close.iloc[-6]) if len(close) >= 6 else prev
-                vol_today = float(volume.iloc[-1])
-                vol_avg20 = float(volume.iloc[-21:-1].mean()) if len(volume) >= 21 else float(volume.iloc[:-1].mean())
-
-                if cur <= 0 or prev <= 0 or vol_avg20 < 50000:
-                    continue  # 流動性フィルタ
-
-                # 投資資金フィルタ（100株購入コストが資金の2倍を超える場合除外）
-                if available_cash > 0 and cur * 100 > available_cash * 2:
-                    continue
-
-                chg1d = (cur - prev) / prev * 100
-                chg5d = (cur - prev5) / prev5 * 100
-                vol_ratio = vol_today / vol_avg20 if vol_avg20 > 0 else 1.0
-
-                # MA計算
-                ma5 = float(close.iloc[-5:].mean()) if len(close) >= 5 else cur
-                ma25 = float(close.iloc[-25:].mean()) if len(close) >= 25 else cur
-                period_high = float(close.iloc[-25:].max()) if len(close) >= 25 else cur
-
-                # Factor2: トレンド品質ボーナス
-                trend_bonus = 1.5 if (cur > ma5 and ma5 > ma25) else (0.7 if cur < ma25 else 1.0)
-
-                # Factor3: ブレイクアウトボーナス
-                breakout_bonus = 1.3 if (cur > 0.97 * period_high and chg1d > 0) else 1.0
-
-                # Factor1: 買い圧力スコア（上昇+出来高）
-                buy_pressure = max(0.0, chg1d) * vol_ratio
-
-                # モメンタムスコア
-                momentum_score = buy_pressure * trend_bonus * breakout_bonus
-
-                # Factor4: リバーサルスコア（急落後の出来高急増）
-                reversal_score = 0.0
-                if chg5d < -7 and vol_ratio > 1.5:
-                    reversal_score = abs(chg5d) * vol_ratio * 0.6
-
-                # Factor5: 異常出来高スコア（方向問わず）
-                vol_anomaly = max(0.0, vol_ratio - 1.5) * 0.3
-
-                row = {
-                    "ticker": ticker,
-                    "price": round(cur, 0),
-                    "chg1d": round(chg1d, 2),
-                    "chg5d": round(chg5d, 2),
-                    "vol_ratio": round(vol_ratio, 2),
-                    "ma5_above_ma25": cur > ma5 > ma25,
-                    "near_breakout": cur > 0.97 * period_high,
-                    "momentum_score": round(momentum_score, 3),
-                    "reversal_score": round(reversal_score, 3),
-                    "vol_anomaly": round(vol_anomaly, 3),
-                }
-
-                if momentum_score > 0.5:
+                if row["momentum_score"] > 0.5:
                     momentum_results.append(row)
-                if reversal_score > 2.0:
+                if row["reversal_score"] > 2.0:
                     reversal_results.append(row)
-                if vol_anomaly > 0.5 and row not in momentum_results:
+                if row["vol_anomaly"] > 0.5:
                     high_volume_results.append(row)
-
             except Exception:
                 continue
 
-        # ソート
-        momentum_results.sort(key=lambda x: x["momentum_score"], reverse=True)
-        reversal_results.sort(key=lambda x: x["reversal_score"], reverse=True)
-        high_volume_results.sort(key=lambda x: x["vol_anomaly"], reverse=True)
+        total = len(set(
+            [r["ticker"] for r in momentum_results] +
+            [r["ticker"] for r in reversal_results] +
+            [r["ticker"] for r in high_volume_results]
+        ))
+        if total >= 20:
+            logger.info(f"スコアリング完了 (流動性フィルタ={min_vol:,}株): 有効銘柄{total}件")
+            break
+        logger.warning(f"流動性フィルタ{min_vol:,}株で候補{total}件 → 緩和して再試行")
 
-        # モメンタム上位30 + リバーサル上位15 + 異常出来高上位15を組み合わせ
-        combined = {}
-        for r in momentum_results[:30]:
+    # ── 最終的に候補が少なすぎる場合は全銘柄をスコアなしで返す ──────────────
+    all_scored = {r["ticker"]: r for r in momentum_results}
+    for r in reversal_results + high_volume_results:
+        all_scored.setdefault(r["ticker"], r)
+
+    if len(all_scored) < 15:
+        logger.warning(f"スコアリング結果が{len(all_scored)}件のみ。上位銘柄をそのまま使用。")
+        top_tickers = universe[:top_n]
+        return top_tickers, "スコアリング候補不足（市場休場またはデータ取得問題）"
+
+    # ソート
+    momentum_results.sort(key=lambda x: x["momentum_score"], reverse=True)
+    reversal_results.sort(key=lambda x: x["reversal_score"], reverse=True)
+    high_volume_results.sort(key=lambda x: x["vol_anomaly"], reverse=True)
+
+    # モメンタム上位30 + リバーサル上位15 + 異常出来高上位15を組み合わせ
+    combined = {}
+    for r in momentum_results[:30]:
+        combined[r["ticker"]] = r
+    for r in reversal_results[:15]:
+        if r["ticker"] not in combined:
             combined[r["ticker"]] = r
-        for r in reversal_results[:15]:
-            if r["ticker"] not in combined:
-                combined[r["ticker"]] = r
-        for r in high_volume_results[:15]:
-            if r["ticker"] not in combined:
-                combined[r["ticker"]] = r
+    for r in high_volume_results[:15]:
+        if r["ticker"] not in combined:
+            combined[r["ticker"]] = r
 
-        top = list(combined.values())[:top_n]
-        top_tickers = [r["ticker"] for r in top]
+    top = list(combined.values())[:top_n]
+    top_tickers = [r["ticker"] for r in top]
 
-        # サマリーテキスト生成（カテゴリ別）
-        lines = [
-            f"## 全{len(universe)}銘柄 定量スクリーニング結果",
-            f"（流動性フィルタ適用後・モメンタム/リバーサル/異常出来高の3カテゴリ横断）",
-            "",
-            "### モメンタム候補（上昇トレンド＋出来高確認）",
-            "| ティッカー | 株価 | 1日変化 | 5日変化 | 出来高比 | トレンド | ブレイクアウト | スコア |",
-            "|---|---|---|---|---|---|---|---|",
-        ]
-        for r in momentum_results[:25]:
-            trend_str = "↑上昇トレンド" if r["ma5_above_ma25"] else "-"
-            bo_str = "★近" if r["near_breakout"] else "-"
-            lines.append(
-                f"| {r['ticker']} | {r['price']:,.0f}円 | "
-                f"{'+' if r['chg1d'] >= 0 else ''}{r['chg1d']}% | "
-                f"{'+' if r['chg5d'] >= 0 else ''}{r['chg5d']}% | "
-                f"{r['vol_ratio']}x | {trend_str} | {bo_str} | {r['momentum_score']} |"
-            )
+    # サマリーテキスト生成（カテゴリ別）
+    lines = [
+        f"## 全{len(universe)}銘柄 定量スクリーニング結果",
+        "（流動性フィルタ適用後・モメンタム/リバーサル/異常出来高の3カテゴリ横断）",
+        "",
+        "### モメンタム候補（上昇トレンド＋出来高確認）",
+        "| ティッカー | 株価 | 1日変化 | 5日変化 | 出来高比 | トレンド | ブレイクアウト | スコア |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for r in momentum_results[:25]:
+        trend_str = "↑上昇トレンド" if r["ma5_above_ma25"] else "-"
+        bo_str = "★近" if r["near_breakout"] else "-"
+        lines.append(
+            f"| {r['ticker']} | {r['price']:,.0f}円 | "
+            f"{'+' if r['chg1d'] >= 0 else ''}{r['chg1d']}% | "
+            f"{'+' if r['chg5d'] >= 0 else ''}{r['chg5d']}% | "
+            f"{r['vol_ratio']}x | {trend_str} | {bo_str} | {r['momentum_score']} |"
+        )
 
+    lines += [
+        "",
+        "### リバーサル候補（急落後の出来高急増＝底打ちシグナル）",
+        "| ティッカー | 株価 | 1日変化 | 5日変化 | 出来高比 | スコア |",
+        "|---|---|---|---|---|---|",
+    ]
+    for r in reversal_results[:15]:
+        lines.append(
+            f"| {r['ticker']} | {r['price']:,.0f}円 | "
+            f"{'+' if r['chg1d'] >= 0 else ''}{r['chg1d']}% | "
+            f"{r['chg5d']}% | {r['vol_ratio']}x | {r['reversal_score']} |"
+        )
+
+    if high_volume_results:
         lines += [
             "",
-            "### リバーサル候補（急落後の出来高急増＝底打ちシグナル）",
-            "| ティッカー | 株価 | 1日変化 | 5日変化 | 出来高比 | スコア |",
-            "|---|---|---|---|---|---|",
+            "### 異常出来高候補（方向性不明だが大口動き）",
+            "| ティッカー | 株価 | 1日変化 | 出来高比 |",
+            "|---|---|---|---|",
         ]
-        for r in reversal_results[:15]:
+        for r in high_volume_results[:10]:
             lines.append(
                 f"| {r['ticker']} | {r['price']:,.0f}円 | "
-                f"{'+' if r['chg1d'] >= 0 else ''}{r['chg1d']}% | "
-                f"{r['chg5d']}% | {r['vol_ratio']}x | {r['reversal_score']} |"
+                f"{'+' if r['chg1d'] >= 0 else ''}{r['chg1d']}% | {r['vol_ratio']}x |"
             )
 
-        if high_volume_results:
-            lines += [
-                "",
-                "### 異常出来高候補（方向性不明だが大口動き）",
-                "| ティッカー | 株価 | 1日変化 | 出来高比 |",
-                "|---|---|---|---|",
-            ]
-            for r in high_volume_results[:10]:
-                lines.append(
-                    f"| {r['ticker']} | {r['price']:,.0f}円 | "
-                    f"{'+' if r['chg1d'] >= 0 else ''}{r['chg1d']}% | {r['vol_ratio']}x |"
-                )
-
-        total_scored = len(momentum_results) + len(set(r["ticker"] for r in reversal_results) - set(r["ticker"] for r in momentum_results))
-        logger.info(
-            f"スクリーニング完了: モメンタム{len(momentum_results)}, "
-            f"リバーサル{len(reversal_results)}, 異常出来高{len(high_volume_results)} → 上位{len(top)}銘柄"
-        )
-        return top_tickers, "\n".join(lines)
-
-    except Exception as e:
-        logger.warning(f"高速事前スクリーニング例外: {e}")
-        return universe[:top_n], f"スクリーニング例外: {e}"
+    logger.info(
+        f"スクリーニング完了: モメンタム{len(momentum_results)}, "
+        f"リバーサル{len(reversal_results)}, 異常出来高{len(high_volume_results)} → 上位{len(top)}銘柄"
+    )
+    return top_tickers, "\n".join(lines)
 
 # ── 候補銘柄をスクリーニング結果からパース ─────────────────────────────────
 
