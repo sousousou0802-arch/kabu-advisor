@@ -95,26 +95,39 @@ def _gemini_search(queries: list[str]) -> str:
     consecutive_failures = 0
 
     for query in queries:
-        if consecutive_failures >= 2:
-            logger.warning("Gemini連続失敗。残りクエリをスキップ。")
+        if consecutive_failures >= 3:
+            logger.warning("Gemini連続失敗3回。残りクエリをスキップ。")
             break
-        try:
-            response = gclient.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=_FACT_ONLY_INSTRUCTION.format(query=query),
-                config=gtypes.GenerateContentConfig(
-                    tools=[gtypes.Tool(google_search=gtypes.GoogleSearch())],
-                    temperature=0.0,
-                ),
-            )
-            text = response.text or ""
-            if text:
-                results.append(f"【{query}】\n{text}")
-            consecutive_failures = 0
-            logger.info(f"Gemini検索完了: {query[:30]}")
-        except Exception as e:
-            consecutive_failures += 1
-            logger.warning(f"Gemini検索失敗 ({query}): {e}")
+        wait = 35
+        for attempt in range(4):
+            try:
+                response = gclient.models.generate_content(
+                    model="gemini-2.0-flash",
+                    contents=_FACT_ONLY_INSTRUCTION.format(query=query),
+                    config=gtypes.GenerateContentConfig(
+                        tools=[gtypes.Tool(google_search=gtypes.GoogleSearch())],
+                        temperature=0.0,
+                    ),
+                )
+                text = response.text or ""
+                if text:
+                    results.append(f"【{query}】\n{text}")
+                consecutive_failures = 0
+                logger.info(f"Gemini検索完了: {query[:30]}")
+                break
+            except Exception as e:
+                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                    if attempt < 3:
+                        logger.warning(f"Gemini 429。{wait}秒後にリトライ ({attempt+1}/3)")
+                        time.sleep(wait)
+                        wait = int(wait * 1.5)
+                    else:
+                        consecutive_failures += 1
+                        logger.warning(f"Gemini 429上限超過。スキップ: {query[:30]}")
+                else:
+                    consecutive_failures += 1
+                    logger.warning(f"Gemini失敗 ({query[:30]}): {e}")
+                    break
 
     return "\n\n".join(results)
 
@@ -311,14 +324,8 @@ def generate_proposal(settings: dict, portfolio: list[dict], history: list[dict]
     logger.info("Step1b: Gemini検索（市場情報・銘柄情報）")
     market_queries = build_market_search_queries()
 
-    # 候補銘柄の個別検索クエリも追加
-    stock_queries = []
-    for ticker in FALLBACK_UNIVERSE[:5]:
-        code = ticker.replace(".T", "")
-        stock_queries.extend(build_stock_search_queries(code, code))
-
-    all_queries = market_queries + stock_queries
-    market_info = _gemini_search(all_queries)
+    # 市場全体クエリのみ（銘柄個別はyfinanceで代替、クエリ数を最小化）
+    market_info = _gemini_search(market_queries)
 
     # RSS市場ニュース（全文）
     rss_news = get_market_news_rss(max_items=15)
