@@ -40,29 +40,38 @@ def _get_client() -> anthropic.Anthropic:
 
 # ── web_search ───────────────────────────────────────────────────────────────
 
-def _web_search(client: anthropic.Anthropic, queries: list[str], max_uses: int = 8) -> str:
+def _web_search(client: anthropic.Anthropic, queries: list[str], max_uses: int = 5) -> str:
     tool_def = {
         "type": "web_search_20250305",
         "name": "web_search",
         "max_uses": min(max_uses, len(queries)),
     }
     query_list = "\n".join(f"- {q}" for q in queries)
-    prompt = f"""以下のクエリで順番にウェブ検索し、投資判断に役立つ数値・事実・最新情報をまとめてください。
+    prompt = f"""以下のクエリで順番にウェブ検索し、投資判断に役立つ数値・事実・最新情報を簡潔にまとめてください。各クエリの結果は200字以内で要点のみ記載してください。
 
 {query_list}
 """
-    try:
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=3000,
-            tools=[tool_def],
-            messages=[{"role": "user", "content": prompt}],
-        )
-        texts = [b.text for b in response.content if hasattr(b, "text")]
-        return "\n\n".join(texts)
-    except Exception as e:
-        logger.warning(f"web_search失敗: {e}")
-        return f"（web_search失敗: {e}）"
+    max_retries = 5
+    wait = 60
+    for attempt in range(max_retries):
+        try:
+            response = client.messages.create(
+                model=MODEL,
+                max_tokens=2000,
+                tools=[tool_def],
+                messages=[{"role": "user", "content": prompt}],
+            )
+            texts = [b.text for b in response.content if hasattr(b, "text")]
+            return "\n\n".join(texts)
+        except anthropic.RateLimitError as e:
+            if attempt == max_retries - 1:
+                return f"（web_search失敗: レート制限）"
+            logger.warning(f"web_search 429。{wait}秒後にリトライ ({attempt+1}/{max_retries})")
+            time.sleep(wait)
+            wait *= 2
+        except Exception as e:
+            logger.warning(f"web_search失敗: {e}")
+            return f"（web_search失敗: {e}）"
 
 
 # ── エージェント呼び出し ──────────────────────────────────────────────────────
@@ -131,6 +140,39 @@ def _parse_candidates(screening_text: str) -> list[str]:
     return [f"{t}.T" for t in dict.fromkeys(tickers)]  # 重複除去・順序保持
 
 
+# ── エージェント向けデータサマリー ─────────────────────────────────────────────
+
+def _format_data_for_agents(raw_data: dict) -> str:
+    """raw_dataをトークン効率の良いテキストに変換する"""
+    lines = []
+    for ticker, stock in raw_data.get("stocks", {}).items():
+        tech = stock.get("technical", {})
+        fund = stock.get("fundamental", {})
+        news = stock.get("news", [])
+        web  = stock.get("web_search", "")
+
+        lines.append(f"### {ticker}")
+        lines.append(f"株価: {tech.get('current_price')}円 (前日比: {tech.get('price_change_pct')}%)")
+        lines.append(f"MA5/25/75: {tech.get('ma5')}/{tech.get('ma25')}/{tech.get('ma75')}")
+        lines.append(f"RSI14: {tech.get('rsi14')} / MACD: {tech.get('macd', {}).get('macd')} Signal: {tech.get('macd', {}).get('signal')}")
+        lines.append(f"出来高MA比: {tech.get('volume_ma20_ratio')} / 52週高値: {tech.get('week52_high')} 安値: {tech.get('week52_low')}")
+
+        if fund and not fund.get("error"):
+            lines.append(f"売上: {fund.get('net_sales')} / 営業利益: {fund.get('operating_profit')} / PER: {fund.get('per')} / PBR: {fund.get('pbr')}")
+
+        if news:
+            lines.append("直近ニュース:")
+            for n in news[:3]:
+                lines.append(f"  - {n.get('title', '')} ({n.get('published', '')[:16]})")
+
+        if web:
+            # web_searchは先頭500文字のみ
+            lines.append(f"web検索: {web[:500]}")
+
+        lines.append("")
+    return "\n".join(lines)
+
+
 # ── 自信度パース ──────────────────────────────────────────────────────────────
 
 def _extract_confidence(text: str) -> int:
@@ -185,6 +227,9 @@ def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
     )
     screening_result = _call_agent(client, SCREENER_SYSTEM, screener_user)
 
+    logger.info("スクリーナー完了。30秒待機...")
+    time.sleep(30)
+
     # 候補銘柄を抽出してデータ収集
     candidate_tickers = _parse_candidates(screening_result)
     # 保有銘柄も含める
@@ -220,7 +265,8 @@ def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
         f"期日: {settings['deadline']}（残り{remaining_days}日）\n"
         f"今日: {today_str}"
     )
-    data_text = json.dumps(raw_data, ensure_ascii=False, indent=2)
+    # JSONをそのまま渡さずテキストサマリーに変換（トークン節約）
+    data_text = _format_data_for_agents(raw_data)
 
     # ── Step 2: 強気アナリスト ────────────────────────────────────────────────
     logger.info("Step2: 強気アナリスト")
