@@ -16,6 +16,8 @@ from datetime import date
 from typing import Optional
 
 import anthropic
+from google import genai
+from google.genai import types as gtypes
 
 from advisor.data import collect_stock_data, get_market_news_rss
 from advisor.prompts import (
@@ -36,6 +38,10 @@ MAX_TOKENS = 4096
 
 def _get_client() -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+
+
+def _get_gemini_client() -> genai.Client:
+    return genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
 
 # ── web_search ───────────────────────────────────────────────────────────────
@@ -61,35 +67,30 @@ def _api_call_with_retry(fn, label: str = ""):
             wait = int(wait * 1.5)
 
 
-def _web_search(client: anthropic.Anthropic, queries: list[str], max_uses: int = 5) -> str:
-    """web_searchツールで複数クエリを検索する。各クエリを個別に呼び出してトークンを分散させる。"""
+def _gemini_search(queries: list[str]) -> str:
+    """
+    GeminiのGoogle検索グラウンディングで複数クエリを検索する。
+    Claudeのweb_searchと違いトークン制限がなく、レート制限も緩い。
+    """
+    gclient = _get_gemini_client()
     results = []
-    for query in queries[:max_uses]:
-        tool_def = {
-            "type": "web_search_20250305",
-            "name": "web_search",
-            "max_uses": 1,
-        }
-        prompt = f"次のクエリで検索し、投資判断に役立つ情報を答えてください: {query}"
 
-        def fn(q=query, td=tool_def, p=prompt):
-            response = client.messages.create(
-                model=MODEL,
-                max_tokens=1500,
-                tools=[td],
-                messages=[{"role": "user", "content": p}],
-            )
-            texts = [b.text for b in response.content if hasattr(b, "text")]
-            return "\n".join(texts)
-
+    for query in queries:
         try:
-            result = _api_call_with_retry(fn, f"web_search:{query[:20]}")
-            results.append(f"【{query}】\n{result}")
+            response = gclient.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=f"以下について検索し、投資判断に役立つ最新情報・数値・事実を詳しく答えてください。\n\n{query}",
+                config=gtypes.GenerateContentConfig(
+                    tools=[gtypes.Tool(google_search=gtypes.GoogleSearch())],
+                    temperature=0.1,
+                ),
+            )
+            text = response.text or "（結果なし）"
+            results.append(f"【{query}】\n{text}")
+            logger.info(f"Gemini検索完了: {query[:30]}")
         except Exception as e:
-            logger.warning(f"web_search失敗 ({query}): {e}")
-            results.append(f"【{query}】\n（取得失敗）")
-
-        time.sleep(65)  # 各クエリ間で65秒待機（1分ウィンドウをリセット）
+            logger.warning(f"Gemini検索失敗 ({query}): {e}")
+            results.append(f"【{query}】\n（取得失敗: {e}）")
 
     return "\n\n".join(results)
 
@@ -241,24 +242,31 @@ def generate_proposal(settings: dict, portfolio: list[dict]) -> dict:
     raw_data = collect_stock_data(prefetch_tickers)
     fallback_summary = _format_data_for_agents(raw_data)
 
-    # ── Step 1b: 市場情報をweb_searchで網羅的に収集 ───────────────────────────
-    # 各クエリ間に65秒sleep → 1分トークンウィンドウをリセットして情報を制限しない
-    logger.info("Step1b: 市場情報web_search（全クエリ）")
+    # ── Step 1b: Gemini Google検索で市場情報を網羅的に収集 ───────────────────
+    logger.info("Step1b: Gemini検索（市場情報・銘柄情報）")
     market_queries = build_market_search_queries()
-    market_info = _web_search(client, market_queries, max_uses=5)
+
+    # 候補銘柄の個別検索クエリも追加
+    stock_queries = []
+    for ticker in FALLBACK_UNIVERSE[:5]:
+        code = ticker.replace(".T", "")
+        stock_queries.extend(build_stock_search_queries(code, code))
+
+    all_queries = market_queries + stock_queries
+    market_info = _gemini_search(all_queries)
 
     # RSS市場ニュース（全文）
     rss_news = get_market_news_rss(max_items=15)
     rss_text = "\n".join(f"- {n['title']}: {n['summary']}" for n in rss_news)
 
     full_market_info = (
-        f"## web検索結果\n{market_info}\n\n"
+        f"## Gemini Google検索結果\n{market_info}\n\n"
         f"## 市場ニュース（RSS）\n{rss_text}\n\n"
-        f"## 主要銘柄の株価データ\n{fallback_summary}"
+        f"## 主要銘柄の株価・テクニカルデータ\n{fallback_summary}"
     )
 
-    logger.info("Step1b完了。65秒待機...")
-    time.sleep(65)
+    # Gemini検索はClaudeのトークン制限に影響しないので待機不要
+    logger.info("Step1b完了。65秒待機（Claudeスクリーナー前）...")
 
     # ── Step 1c: スクリーナーエージェント ────────────────────────────────────
     logger.info("Step1c: スクリーナー実行")
