@@ -67,7 +67,7 @@ class SetupRequest(BaseModel):
 class TradeResultRequest(BaseModel):
     proposal_id: int
     trades: list[dict]  # [{ticker, company_name, action, shares, price, pnl, memo}]
-    new_cash: int       # トレード後の現金残高
+    new_cash: int = None  # 廃止（自動計算）
 
 
 # ── API ───────────────────────────────────────────────────────────────────────
@@ -254,8 +254,20 @@ def api_result(req: TradeResultRequest, db: Session = Depends(get_db)):
         elif action == "sell" and ticker and shares:
             reduce_position(db, ticker, shares)
 
-    # 現金残高を更新
-    upsert_settings(db, {"current_cash": req.new_cash})
+    # 現金残高を取引内容から自動計算
+    settings = get_settings(db)
+    current_cash = settings.current_cash or 0
+    for trade in req.trades:
+        action = trade.get("action")
+        shares = trade.get("shares", 0) or 0
+        price = trade.get("price", 0) or 0
+        pnl = trade.get("pnl", 0) or 0
+        if action == "buy":
+            current_cash -= int(shares * price)
+        elif action == "sell":
+            # 売却代金（shares×price）を加算、損益は約定価格に含まれるため別途加算しない
+            current_cash += int(shares * price)
+    upsert_settings(db, {"current_cash": current_cash})
 
     return {"ok": True}
 

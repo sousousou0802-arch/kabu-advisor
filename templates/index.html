@@ -165,10 +165,6 @@
           <div class="card-title">取引結果を記録</div>
           <p style="font-size:12px;color:var(--text2);margin-bottom:10px">実際に行った取引を記録してください。</p>
           <div id="trade-inputs"></div>
-          <div class="form-group">
-            <label class="form-label">取引後の現金残高（円）</label>
-            <input class="form-input" id="inp-new-cash" type="number" placeholder="例: 980000" />
-          </div>
           <button class="btn btn-success" onclick="saveResult()">結果を保存</button>
         </div>
       </div>
@@ -469,9 +465,6 @@ function displayProposal(data) {
 
 // ── 結果保存 ──────────────────────────────────────────────────────────────
 async function saveResult() {
-  const newCash = parseInt(document.getElementById('inp-new-cash').value);
-  if (isNaN(newCash)) { toast('取引後の現金残高を入力してください'); return; }
-
   const trades = [];
   document.querySelectorAll('.trade-input').forEach(el => {
     const ticker = el.querySelector('.trade-ticker')?.value.trim().toUpperCase();
@@ -483,11 +476,12 @@ async function saveResult() {
       trades.push({ ticker, action, shares, price, pnl: pnl || 0, company_name: '' });
     }
   });
+  if (trades.length === 0) { toast('取引を1件以上入力してください'); return; }
 
   const res = await fetch('/api/result', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ proposal_id: proposalId, trades, new_cash: newCash }),
+    body: JSON.stringify({ proposal_id: proposalId, trades }),
   });
   if (res.ok) {
     toast('結果を保存しました');
