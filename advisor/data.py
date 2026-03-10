@@ -26,47 +26,47 @@ JQUANTS_BASE = "https://api.jquants.com/v1"
 _JPX_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
 _JPX_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; kabu-advisor/1.0)"}
 
-def get_all_tse_tickers_from_jpx(markets: list[str] | None = None) -> list[str]:
+def get_all_tse_tickers_from_jpx(
+    markets: list[str] | None = None,
+    size_filter: list[str] | None = None,
+) -> list[str]:
     """
     JPX公開Excelから全TSE内国株ティッカーリストを取得する。
-    カラム: コード / 銘柄名 / 市場・商品区分 (例: "プライム（内国株式）")
-    markets: None=全内国株, ["プライム"], ["プライム","スタンダード"] 等で市場フィルタ。
+    markets: None=全内国株, ["プライム"] 等で市場フィルタ
+    size_filter: ["TOPIX Core30","TOPIX Large70","TOPIX Mid400"] 等で時価総額フィルタ
     """
     try:
         resp = requests.get(_JPX_URL, headers=_JPX_HEADERS, timeout=30)
         resp.raise_for_status()
         df = pd.read_excel(io.BytesIO(resp.content), dtype=str)
 
-        # コード列・市場区分列を特定
         code_col = next(
             (c for c in df.columns if "コード" in str(c) or str(c).lower() in ("code",)),
             df.columns[0],
         )
-        market_col = next(
-            (c for c in df.columns if "市場" in str(c)),
-            None,
-        )
+        market_col = next((c for c in df.columns if "市場" in str(c)), None)
+        size_col = next((c for c in df.columns if str(c) == "規模区分"), None)
 
         tickers = []
         for _, row in df.iterrows():
-            raw_code = str(row[code_col]).strip().split(".")[0]  # "1234.0" → "1234"
+            raw_code = str(row[code_col]).strip().split(".")[0]
             if len(raw_code) != 4 or not raw_code.isdigit():
                 continue
 
             market_val = str(row.get(market_col, "")) if market_col else ""
-
-            # 内国株式のみ（ETF・ETN・外国株式・REIT等を除外）
             if market_col and "内国株式" not in market_val:
                 continue
+            if markets and not any(m in market_val for m in markets):
+                continue
 
-            # 追加の市場フィルタ（プライム/スタンダード/グロース）
-            if markets:
-                if not any(m in market_val for m in markets):
+            if size_filter and size_col:
+                size_val = str(row.get(size_col, ""))
+                if not any(s in size_val for s in size_filter):
                     continue
 
             tickers.append(f"{raw_code}.T")
 
-        logger.info(f"JPX: {len(tickers)}銘柄取得 (markets={markets})")
+        logger.info(f"JPX: {len(tickers)}銘柄取得 (markets={markets}, size={size_filter})")
         return tickers
 
     except Exception as e:

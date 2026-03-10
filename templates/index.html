@@ -379,6 +379,19 @@ function _startPolling(msg, btn) {
         _pollTimer = null;
         msg.textContent = 'エラー: ' + (s.detail || '生成失敗');
         btn.disabled = false;
+      } else if (s.status === 'idle') {
+        // サーバー再起動でジョブが消えた → 自動で再リクエスト
+        clearInterval(_pollTimer);
+        _pollTimer = null;
+        msg.innerHTML = '<span class="spinner"></span>サーバー再起動を検知。生成を再開します...';
+        await new Promise(r => setTimeout(r, 2000));
+        const res = await fetch('/api/generate', { method: 'POST' });
+        if (res.ok) {
+          _startPolling(msg, btn);
+        } else {
+          msg.textContent = '再起動後の再開に失敗しました。ページをリロードして再試行してください。';
+          btn.disabled = false;
+        }
       } else {
         msg.innerHTML = `<span class="spinner"></span>AIが分析中... (${elapsed}秒経過)`;
       }

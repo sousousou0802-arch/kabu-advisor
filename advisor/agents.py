@@ -301,26 +301,33 @@ BROAD_UNIVERSE_FALLBACK = [
 BROAD_UNIVERSE_FALLBACK = list(dict.fromkeys(BROAD_UNIVERSE_FALLBACK))
 
 
+_TOPIX500_SIZES = ["TOPIX Core30", "TOPIX Large70", "TOPIX Mid400"]
+
+
 def _get_universe() -> list[str]:
     """
-    使用する銘柄ユニバースを返す（プライム・スタンダード・グロース全市場）。
-    優先順: JPX公開Excel（全市場）→ J-Quants（プライムのみ）→ フォールバック。
+    プレスクリーニング用ユニバースを返す。
+    TOPIX500相当（Core30+Large70+Mid400）に絞ることで高速・安定動作を実現。
+    ※ 日次取引において流動性のない銘柄は実質取引不能のため、
+      TOPIX500は「実際に取引できる銘柄の最適解」。
+    優先順: JPX公開Excel（TOPIX500）→ J-Quants（プライム）→ フォールバック
     """
-    # 1. JPX公開データ（プライム+スタンダード+グロース）
     from advisor.data import get_all_tse_tickers_from_jpx, get_all_tse_prime_tickers
-    jpx = get_all_tse_tickers_from_jpx()
-    if jpx and len(jpx) > 200:
-        logger.info(f"JPX動的ユニバース使用: {len(jpx)}銘柄（全市場）")
+
+    # 1. JPX公開データ（TOPIX500相当: Core30+Large70+Mid400）
+    jpx = get_all_tse_tickers_from_jpx(size_filter=_TOPIX500_SIZES)
+    if jpx and len(jpx) > 100:
+        logger.info(f"JPX TOPIX500ユニバース: {len(jpx)}銘柄")
         return jpx
 
     # 2. J-Quants（プライムのみ）
     dynamic = get_all_tse_prime_tickers()
     if dynamic and len(dynamic) > 100:
-        logger.info(f"J-Quants動的ユニバース使用: {len(dynamic)}銘柄")
+        logger.info(f"J-Quants動的ユニバース: {len(dynamic)}銘柄")
         return dynamic
 
     # 3. 静的フォールバック
-    logger.info(f"フォールバックユニバース使用: {len(BROAD_UNIVERSE_FALLBACK)}銘柄")
+    logger.info(f"フォールバックユニバース: {len(BROAD_UNIVERSE_FALLBACK)}銘柄")
     return BROAD_UNIVERSE_FALLBACK
 
 
