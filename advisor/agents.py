@@ -358,17 +358,17 @@ def _fast_prescreen(
     """
     import yfinance as yf
     import pandas as pd
-    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     logger.info(f"高速事前スクリーニング開始: {len(universe)}銘柄")
 
-    # ── チャンク並列ダウンロード（300銘柄×4並列）────────────────────────────
-    # period="10d": chg1d/chg5d/vol_ratio計算に十分、かつデータ量が period="30d" の1/3
-    CHUNK = 300
+    # ── チャンク逐次ダウンロード（150銘柄ずつ）────────────────────────────────
+    # 並列は Render の512MB メモリを超えてサーバーがダウンするため逐次に変更
+    # period="10d": chg1d/chg5d/vol_ratio 計算に十分
+    CHUNK = 150
     chunks = [universe[i:i+CHUNK] for i in range(0, len(universe), CHUNK)]
+    all_data_frames = []
 
-    def _download_chunk(args):
-        idx, chunk = args
+    for i, chunk in enumerate(chunks):
         try:
             data = yf.download(
                 chunk,
@@ -377,19 +377,12 @@ def _fast_prescreen(
                 progress=False,
                 group_by="ticker",
             )
-            logger.info(f"チャンク{idx+1}/{len(chunks)} 完了 ({len(chunk)}銘柄)")
-            return chunk, data if not data.empty else None
+            if not data.empty:
+                all_data_frames.append((chunk, data))
+            logger.info(f"チャンク{i+1}/{len(chunks)} 完了 ({len(chunk)}銘柄)")
         except Exception as e:
-            logger.warning(f"チャンク{idx+1}失敗: {e}")
-            return chunk, None
-
-    all_data_frames = []
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {executor.submit(_download_chunk, (i, c)): i for i, c in enumerate(chunks)}
-        for future in as_completed(futures):
-            chunk_tickers, chunk_data = future.result()
-            if chunk_data is not None:
-                all_data_frames.append((chunk_tickers, chunk_data))
+            logger.warning(f"チャンク{i+1}失敗: {e}")
+            continue
 
     if not all_data_frames:
         logger.warning("全チャンクDL失敗。フォールバック使用。")
