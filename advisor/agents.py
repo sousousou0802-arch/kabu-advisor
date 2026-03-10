@@ -98,8 +98,8 @@ def _gemini_search(queries: list[str]) -> str:
         if consecutive_failures >= 3:
             logger.warning("Gemini連続失敗3回。残りクエリをスキップ。")
             break
-        wait = 35
-        for attempt in range(4):
+        wait = 10
+        for attempt in range(2):  # 最大1回リトライ（429が続くならすぐスキップ）
             try:
                 response = gclient.models.generate_content(
                     model="gemini-2.0-flash",
@@ -117,10 +117,9 @@ def _gemini_search(queries: list[str]) -> str:
                 break
             except Exception as e:
                 if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                    if attempt < 3:
-                        logger.warning(f"Gemini 429。{wait}秒後にリトライ ({attempt+1}/3)")
+                    if attempt < 1:
+                        logger.warning(f"Gemini 429。{wait}秒後にリトライ ({attempt+1}/1)")
                         time.sleep(wait)
-                        wait = int(wait * 1.5)
                     else:
                         consecutive_failures += 1
                         logger.warning(f"Gemini 429上限超過。スキップ: {query[:30]}")
