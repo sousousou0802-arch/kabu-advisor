@@ -1,9 +1,11 @@
 """
-SQLite データベース操作モジュール
+データベース操作モジュール
+- ローカル: SQLite（./kabu_advisor.db）
+- Render: PostgreSQL（DATABASE_URL 環境変数で切り替え）
 """
 
-import json
 import logging
+import os
 from datetime import date, datetime
 from typing import Optional
 
@@ -14,9 +16,14 @@ from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
 logger = logging.getLogger(__name__)
 
-DATABASE_URL = "sqlite:///./kabu_advisor.db"
+_raw_url = os.getenv("DATABASE_URL", "sqlite:///./kabu_advisor.db")
+# Render は "postgres://" で提供するが SQLAlchemy は "postgresql://" が必要
+DATABASE_URL = _raw_url.replace("postgres://", "postgresql://", 1)
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+if DATABASE_URL.startswith("sqlite"):
+    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+else:
+    engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
