@@ -163,9 +163,6 @@ def api_generate(db: Session = Depends(get_db)):
     ]
 
     def _run():
-        _job["running"] = True
-        _job["error"] = None
-        _job["started_at"] = datetime.now().isoformat()
         try:
             result = generate_proposal(settings_dict, portfolio_list, history_list)
             with SessionLocal() as bg_db:
@@ -191,6 +188,9 @@ def api_generate(db: Session = Depends(get_db)):
         finally:
             _job["running"] = False
 
+    _job["running"] = True
+    _job["error"] = None
+    _job["started_at"] = datetime.now().isoformat()
     threading.Thread(target=_run, daemon=True).start()
     return {"ok": True, "status": "running"}
 
@@ -198,14 +198,15 @@ def api_generate(db: Session = Depends(get_db)):
 @app.get("/api/generate/status")
 def api_generate_status(db: Session = Depends(get_db)):
     """バックグラウンド生成ジョブの状態を返す。フロントがポーリングで使用。"""
+    # 生成中フラグを最優先でチェック（再生成中はDBに古い提案があっても running を返す）
+    if _job["running"]:
+        return {"status": "running", "started_at": _job["started_at"]}
+    if _job["error"]:
+        return {"status": "error", "detail": _job["error"]}
     today = date.today()
     existing = get_proposal_by_date(db, today)
     if existing:
         return {"status": "done", "proposal_id": existing.id}
-    if _job["error"]:
-        return {"status": "error", "detail": _job["error"]}
-    if _job["running"]:
-        return {"status": "running", "started_at": _job["started_at"]}
     return {"status": "idle"}
 
 
