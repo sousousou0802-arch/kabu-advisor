@@ -351,29 +351,38 @@ def _fast_prescreen(
     """
     import yfinance as yf
     import pandas as pd
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     logger.info(f"高速事前スクリーニング開始: {len(universe)}銘柄")
 
-    # ── チャンク分割ダウンロード（500銘柄ずつ）────────────────────────────────
-    # 一括DLはメモリ/タイムアウトリスクがあるため500銘柄単位で分割
-    CHUNK = 500
-    all_data_frames = []
+    # ── チャンク並列ダウンロード（300銘柄×4並列）────────────────────────────
+    # period="10d": chg1d/chg5d/vol_ratio計算に十分、かつデータ量が period="30d" の1/3
+    CHUNK = 300
     chunks = [universe[i:i+CHUNK] for i in range(0, len(universe), CHUNK)]
-    for i, chunk in enumerate(chunks):
+
+    def _download_chunk(args):
+        idx, chunk = args
         try:
-            chunk_data = yf.download(
+            data = yf.download(
                 chunk,
-                period="30d",
+                period="10d",
                 auto_adjust=True,
                 progress=False,
                 group_by="ticker",
             )
-            if not chunk_data.empty:
-                all_data_frames.append((chunk, chunk_data))
-            logger.info(f"チャンク{i+1}/{len(chunks)} ダウンロード完了 ({len(chunk)}銘柄)")
+            logger.info(f"チャンク{idx+1}/{len(chunks)} 完了 ({len(chunk)}銘柄)")
+            return chunk, data if not data.empty else None
         except Exception as e:
-            logger.warning(f"チャンク{i+1}ダウンロード失敗: {e}")
-            continue
+            logger.warning(f"チャンク{idx+1}失敗: {e}")
+            return chunk, None
+
+    all_data_frames = []
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {executor.submit(_download_chunk, (i, c)): i for i, c in enumerate(chunks)}
+        for future in as_completed(futures):
+            chunk_tickers, chunk_data = future.result()
+            if chunk_data is not None:
+                all_data_frames.append((chunk_tickers, chunk_data))
 
     if not all_data_frames:
         logger.warning("全チャンクDL失敗。フォールバック使用。")
@@ -418,7 +427,8 @@ def _fast_prescreen(
         prev = float(close.iloc[-2])
         prev5 = float(close.iloc[-6]) if len(close) >= 6 else prev
         vol_today = float(volume.iloc[-1])
-        vol_avg20 = float(volume.iloc[-21:-1].mean()) if len(volume) >= 21 else float(volume.iloc[:-1].mean())
+        # period="10d"で約7営業日分。利用可能な全データの平均をvol_avgとして使用
+        vol_avg20 = float(volume.iloc[:-1].mean()) if len(volume) >= 2 else vol_today
 
         if cur <= 0 or prev <= 0 or vol_avg20 < min_vol:
             return None
