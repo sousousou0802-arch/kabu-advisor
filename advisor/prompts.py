@@ -259,20 +259,12 @@ MODERATOR_USER_TEMPLATE = """以下の分析を統合し、今日の具体的な
 
 def build_market_search_queries() -> list[str]:
     """
-    市場全体の「ファクト」のみを収集するクエリ。
-    意見・予測・推奨は収集しない。数値と公式発表のみ。
+    市場全体の「ファクト」のみを1クエリで収集する（Geminiレート制限対策）。
     """
     from datetime import date
     today = date.today().strftime("%Y年%m月%d日")
-    year_month = date.today().strftime("%Y年%m月")
     return [
-        f"日経平均 終値 前日比 {today}",           # 確定した数値のみ
-        f"NYダウ SP500 ナスダック 終値 {today}",   # 前日米国市場の確定値
-        f"ドル円 ユーロ円 終値 {today}",           # 為替確定値
-        f"日経225先物 現在値 {today}",             # 先物価格（事実）
-        f"東証 売買代金 騰落銘柄数 {today}",       # 市場統計
-        f"日本 経済指標 発表 {year_month}",        # 公式経済指標スケジュール
-        f"東証 決算発表予定 今週",                  # 決算スケジュール（事実）
+        f"{today} 日経平均終値 NYダウ SP500 ナスダック終値 ドル円 日経先物 東証売買代金 決算発表予定",
     ]
 
 
