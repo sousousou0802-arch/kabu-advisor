@@ -126,9 +126,6 @@ def api_generate(db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="設定が未完了です。/api/setup を先に呼んでください。")
 
     today = date.today()
-    existing = get_proposal_by_date(db, today)
-    if existing:
-        return {"ok": True, "status": "done", "proposal_id": existing.id}
 
     # すでにバックグラウンドで生成中なら待機中を返す
     if _job["running"]:
@@ -172,6 +169,11 @@ def api_generate(db: Session = Depends(get_db)):
         try:
             result = generate_proposal(settings_dict, portfolio_list, history_list)
             with SessionLocal() as bg_db:
+                # 既存の当日提案があれば削除して再生成
+                existing_today = get_proposal_by_date(bg_db, today)
+                if existing_today:
+                    bg_db.delete(existing_today)
+                    bg_db.commit()
                 save_proposal(bg_db, {
                     "date": today,
                     "raw_data": json.dumps(result["raw_data"], ensure_ascii=False),
