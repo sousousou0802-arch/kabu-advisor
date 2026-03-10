@@ -352,7 +352,7 @@ def _fast_prescreen(
 
     流動性フィルタ（最低水準に設定し多すぎる除外を防ぐ）:
     - 平均出来高 < 50,000株/日 → 除外（実質取引不能）
-    - 投資資金が設定されている場合: 株価 × 100株 > 資金×2 → 除外
+    - 単元未満株（1株単位）購入を前提とするため株価による除外はしない
 
     戻り値: (上位ティッカーリスト, スクリーナー向けサマリーテキスト)
     """
@@ -431,8 +431,6 @@ def _fast_prescreen(
         vol_avg20 = float(volume.iloc[:-1].mean()) if len(volume) >= 2 else vol_today
 
         if cur <= 0 or prev <= 0 or vol_avg20 < min_vol:
-            return None
-        if available_cash > 0 and cur * 100 > available_cash * 2:
             return None
 
         chg1d = (cur - prev) / prev * 100
