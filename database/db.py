@@ -17,8 +17,13 @@ from sqlalchemy.orm import declarative_base, sessionmaker, Session
 logger = logging.getLogger(__name__)
 
 _raw_url = os.getenv("DATABASE_URL", "sqlite:///./kabu_advisor.db")
-# Render は "postgres://" で提供するが SQLAlchemy は "postgresql://" が必要
-DATABASE_URL = _raw_url.replace("postgres://", "postgresql://", 1)
+# Render は "postgres://" で提供するが SQLAlchemy は "postgresql+psycopg://" が必要
+if _raw_url.startswith("postgres://"):
+    DATABASE_URL = _raw_url.replace("postgres://", "postgresql+psycopg://", 1)
+elif _raw_url.startswith("postgresql://"):
+    DATABASE_URL = _raw_url.replace("postgresql://", "postgresql+psycopg://", 1)
+else:
+    DATABASE_URL = _raw_url
 
 if DATABASE_URL.startswith("sqlite"):
     engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
