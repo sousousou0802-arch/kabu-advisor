@@ -25,7 +25,6 @@ from database.db import (
     get_portfolio, add_position, reduce_position,
     save_proposal, get_proposal_by_date, get_latest_proposal, list_proposals,
     save_trade_result, list_trade_results, get_total_pnl,
-    Proposal,
 )
 
 logging.basicConfig(
@@ -175,7 +174,7 @@ def api_generate(db: Session = Depends(get_db)):
             result = generate_proposal(settings_dict, portfolio_list, history_list)
             with SessionLocal() as bg_db:
                 # 先に新しい提案を保存してから古いものを削除（生成失敗時にデータ消失しないよう順序を守る）
-                new_row = save_proposal(bg_db, {
+                save_proposal(bg_db, {
                     "date": today,
                     "raw_data": json.dumps(result["raw_data"], ensure_ascii=False),
                     "screening_result": result["screening_result"],
@@ -185,14 +184,6 @@ def api_generate(db: Session = Depends(get_db)):
                     "final_proposal": result["final_proposal"],
                     "confidence": result["confidence"],
                 })
-                # 保存成功後に古い提案を削除（new_row以外の当日分）
-                old_rows = bg_db.query(Proposal).filter(
-                    Proposal.date == today,
-                    Proposal.id != new_row.id
-                ).all()
-                for old in old_rows:
-                    bg_db.delete(old)
-                bg_db.commit()
             logger.info("バックグラウンド提案生成完了")
         except Exception as e:
             logger.error(f"バックグラウンド提案生成エラー: {e}", exc_info=True)
@@ -215,10 +206,9 @@ def api_generate_status(db: Session = Depends(get_db)):
         return {"status": "running", "started_at": _job["started_at"]}
     if _job["error"]:
         return {"status": "error", "detail": _job["error"]}
-    today = date.today()
-    existing = get_proposal_by_date(db, today)
-    if existing:
-        return {"status": "done", "proposal_id": existing.id}
+    latest = get_latest_proposal(db)
+    if latest and str(latest.date) == date.today().isoformat():
+        return {"status": "done", "proposal_id": latest.id}
     return {"status": "idle"}
 
 
