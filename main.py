@@ -64,12 +64,6 @@ class SetupRequest(BaseModel):
     deadline: str  # "YYYY-MM-DD"
 
 
-class AddPositionRequest(BaseModel):
-    ticker: str
-    company_name: str = ""
-    shares: int
-    avg_price: float
-
 
 class TradeResultRequest(BaseModel):
     proposal_id: Optional[int] = None
@@ -275,24 +269,6 @@ def api_result(req: TradeResultRequest, db: Session = Depends(get_db)):
 
     return {"ok": True}
 
-
-@app.post("/api/portfolio/add")
-def api_portfolio_add(req: AddPositionRequest, db: Session = Depends(get_db)):
-    """保有銘柄を手動追加（取引記録なし）"""
-    pos = add_position(db, req.ticker, req.company_name, req.shares, req.avg_price)
-    return {"ok": True, "ticker": pos.ticker, "shares": pos.shares, "avg_price": pos.avg_price}
-
-
-@app.delete("/api/portfolio/{ticker}")
-def api_portfolio_delete(ticker: str, db: Session = Depends(get_db)):
-    """保有銘柄を手動削除"""
-    from database.db import Portfolio
-    pos = db.query(Portfolio).filter(Portfolio.ticker == ticker.upper()).first()
-    if not pos:
-        raise HTTPException(status_code=404, detail="銘柄が見つかりません")
-    db.delete(pos)
-    db.commit()
-    return {"ok": True}
 
 
 @app.get("/api/history")

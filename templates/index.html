@@ -201,28 +201,36 @@
       <div id="portfolio-list"><div class="status-msg">保有なし</div></div>
     </div>
     <div class="card" style="margin-top:12px">
-      <div class="card-title">保有銘柄を手動追加</div>
+      <div class="card-title">取引を手動記録（提案消失時の復旧用）</div>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:10px">通常は今日タブの「取引結果を記録」を使ってください。</p>
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">銘柄コード（例: 3626.T）</label>
-          <input class="form-input" id="add-ticker" type="text" placeholder="3626.T" />
+          <input class="form-input" id="manual-ticker" type="text" placeholder="3626.T" />
         </div>
         <div class="form-group">
           <label class="form-label">社名</label>
-          <input class="form-input" id="add-name" type="text" placeholder="TIS" />
+          <input class="form-input" id="manual-name" type="text" placeholder="TIS" />
         </div>
       </div>
       <div class="form-row">
         <div class="form-group">
-          <label class="form-label">株数</label>
-          <input class="form-input" id="add-shares" type="number" placeholder="10" />
+          <label class="form-label">売買</label>
+          <select class="form-input" id="manual-action">
+            <option value="buy">買い</option>
+            <option value="sell">売り</option>
+          </select>
         </div>
         <div class="form-group">
-          <label class="form-label">平均取得単価（円）</label>
-          <input class="form-input" id="add-price" type="number" placeholder="2500" />
+          <label class="form-label">株数</label>
+          <input class="form-input" id="manual-shares" type="number" placeholder="10" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">約定価格（円）</label>
+          <input class="form-input" id="manual-price" type="number" placeholder="2500" />
         </div>
       </div>
-      <button class="btn btn-primary" onclick="addPortfolio()">追加</button>
+      <button class="btn btn-primary" onclick="manualRecord()">記録する</button>
     </div>
   </div>
 
@@ -342,44 +350,33 @@ function renderPortfolio(portfolio) {
         <div class="ticker">${p.ticker} <span style="font-size:12px;color:var(--text2)">${p.company_name || ''}</span></div>
         <div class="detail">${p.shares}株 @ ${Math.round(p.avg_price).toLocaleString()}円</div>
       </div>
-      <button onclick="deletePortfolio('${p.ticker}')" style="background:none;border:1px solid var(--danger);color:var(--danger);border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer">削除</button>
     </div>`).join('');
 }
 
-async function addPortfolio() {
-  const ticker = document.getElementById('add-ticker').value.trim().toUpperCase();
-  const name   = document.getElementById('add-name').value.trim();
-  const shares = parseInt(document.getElementById('add-shares').value);
-  const price  = parseFloat(document.getElementById('add-price').value);
+async function manualRecord() {
+  const ticker = document.getElementById('manual-ticker').value.trim().toUpperCase();
+  const name   = document.getElementById('manual-name').value.trim();
+  const action = document.getElementById('manual-action').value;
+  const shares = parseInt(document.getElementById('manual-shares').value);
+  const price  = parseFloat(document.getElementById('manual-price').value);
   if (!ticker || isNaN(shares) || isNaN(price) || shares <= 0 || price <= 0) {
-    toast('銘柄コード・株数・単価を正しく入力してください');
+    toast('銘柄コード・株数・約定価格を正しく入力してください');
     return;
   }
-  const res = await fetch('/api/portfolio/add', {
+  const res = await fetch('/api/result', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ticker, company_name: name, shares, avg_price: price }),
+    body: JSON.stringify({ trades: [{ ticker, company_name: name, action, shares, price, pnl: 0 }] }),
   });
   if (res.ok) {
-    toast('追加しました');
-    document.getElementById('add-ticker').value = '';
-    document.getElementById('add-name').value = '';
-    document.getElementById('add-shares').value = '';
-    document.getElementById('add-price').value = '';
+    toast('記録しました');
+    document.getElementById('manual-ticker').value = '';
+    document.getElementById('manual-name').value = '';
+    document.getElementById('manual-shares').value = '';
+    document.getElementById('manual-price').value = '';
     await loadStatus();
   } else {
-    toast('追加エラー');
-  }
-}
-
-async function deletePortfolio(ticker) {
-  if (!confirm(`${ticker} を保有一覧から削除しますか？`)) return;
-  const res = await fetch(`/api/portfolio/${ticker}`, { method: 'DELETE' });
-  if (res.ok) {
-    toast('削除しました');
-    await loadStatus();
-  } else {
-    toast('削除エラー');
+    toast('記録エラー');
   }
 }
 
