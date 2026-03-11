@@ -345,12 +345,62 @@ function renderPortfolio(portfolio) {
     return;
   }
   el.innerHTML = portfolio.map(p => `
-    <div class="port-item">
+    <div class="port-item" id="port-${p.ticker}">
       <div class="port-left">
         <div class="ticker">${p.ticker} <span style="font-size:12px;color:var(--text2)">${p.company_name || ''}</span></div>
         <div class="detail">${p.shares}株 @ ${Math.round(p.avg_price).toLocaleString()}円</div>
       </div>
+      <button onclick="startEditPortfolio('${p.ticker}','${p.company_name||''}',${p.shares},${p.avg_price})" style="background:none;border:1px solid var(--text2);color:var(--text2);border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer">編集</button>
+    </div>
+    <div id="port-edit-${p.ticker}" style="display:none;padding:10px;background:var(--card);border-radius:8px;margin-bottom:8px">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">社名</label>
+          <input class="form-input" id="edit-name-${p.ticker}" type="text" value="${p.company_name||''}" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">株数</label>
+          <input class="form-input" id="edit-shares-${p.ticker}" type="number" value="${p.shares}" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">平均取得単価（円）</label>
+          <input class="form-input" id="edit-price-${p.ticker}" type="number" value="${Math.round(p.avg_price)}" />
+        </div>
+      </div>
+      <button onclick="saveEditPortfolio('${p.ticker}')" class="btn btn-primary" style="margin-right:8px">保存</button>
+      <button onclick="cancelEditPortfolio('${p.ticker}')" style="background:none;border:none;color:var(--text2);cursor:pointer">キャンセル</button>
     </div>`).join('');
+}
+
+function startEditPortfolio(ticker, name, shares, price) {
+  document.getElementById(`port-${ticker}`).style.display = 'none';
+  document.getElementById(`port-edit-${ticker}`).style.display = 'block';
+}
+
+function cancelEditPortfolio(ticker) {
+  document.getElementById(`port-${ticker}`).style.display = 'flex';
+  document.getElementById(`port-edit-${ticker}`).style.display = 'none';
+}
+
+async function saveEditPortfolio(ticker) {
+  const name   = document.getElementById(`edit-name-${ticker}`).value.trim();
+  const shares = parseInt(document.getElementById(`edit-shares-${ticker}`).value);
+  const price  = parseFloat(document.getElementById(`edit-price-${ticker}`).value);
+  if (isNaN(shares) || isNaN(price) || shares <= 0 || price <= 0) {
+    toast('株数・単価を正しく入力してください');
+    return;
+  }
+  const res = await fetch(`/api/portfolio/${ticker}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ company_name: name, shares, avg_price: price }),
+  });
+  if (res.ok) {
+    toast('更新しました');
+    await loadStatus();
+  } else {
+    toast('更新エラー');
+  }
 }
 
 async function manualRecord() {

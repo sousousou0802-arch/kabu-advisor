@@ -70,6 +70,11 @@ class TradeResultRequest(BaseModel):
     trades: list[dict]  # [{ticker, company_name, action, shares, price, pnl, memo}]
     new_cash: int = None  # 廃止（自動計算）
 
+class EditPositionRequest(BaseModel):
+    company_name: Optional[str] = None
+    shares: Optional[int] = None
+    avg_price: Optional[float] = None
+
 
 # ── API ───────────────────────────────────────────────────────────────────────
 
@@ -269,6 +274,21 @@ def api_result(req: TradeResultRequest, db: Session = Depends(get_db)):
 
     return {"ok": True}
 
+
+@app.patch("/api/portfolio/{ticker}")
+def api_portfolio_edit(ticker: str, req: EditPositionRequest, db: Session = Depends(get_db)):
+    from database.db import Portfolio
+    pos = db.query(Portfolio).filter(Portfolio.ticker == ticker.upper()).first()
+    if not pos:
+        raise HTTPException(status_code=404, detail="銘柄が見つかりません")
+    if req.company_name is not None:
+        pos.company_name = req.company_name
+    if req.shares is not None:
+        pos.shares = req.shares
+    if req.avg_price is not None:
+        pos.avg_price = req.avg_price
+    db.commit()
+    return {"ok": True}
 
 
 @app.get("/api/history")
