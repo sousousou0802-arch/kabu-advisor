@@ -206,8 +206,9 @@ def api_generate_status(db: Session = Depends(get_db)):
         return {"status": "running", "started_at": _job["started_at"]}
     if _job["error"]:
         return {"status": "error", "detail": _job["error"]}
+    # 最新提案があればdone（日付問わず）。自動再生成の誤発火を防ぐ
     latest = get_latest_proposal(db)
-    if latest and str(latest.date) == date.today().isoformat():
+    if latest:
         return {"status": "done", "proposal_id": latest.id}
     return {"status": "idle"}
 
