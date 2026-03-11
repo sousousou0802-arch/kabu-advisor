@@ -150,7 +150,8 @@ def api_generate(db: Session = Depends(get_db)):
         "target_amount": settings.target_amount,
         "deadline": str(settings.deadline),
     }
-    past_proposals = list_proposals(db, limit=5)
+    today = date.today()
+    past_proposals = [p for p in list_proposals(db, limit=6) if p.date != today][:5]
     past_trades = list_trade_results(db, limit=30)
     trades_by_proposal = {}
     for t in past_trades:
