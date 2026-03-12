@@ -10,6 +10,7 @@
       --border: #2e3248; --accent: #4f8ef7; --accent2: #7c5cbf;
       --green: #34d399; --red: #f87171; --yellow: #fbbf24;
       --text: #e2e8f0; --text2: #94a3b8; --radius: 12px;
+      --danger: #f87171;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; }
@@ -81,8 +82,9 @@
     .port-right .pnl { font-weight: 700; font-size: 13px; }
 
     /* 結果入力 */
-    .trade-input { background: var(--surface2); border-radius: 8px; padding: 12px; margin-bottom: 8px; }
+    .trade-input { background: var(--surface2); border-radius: 8px; padding: 12px; margin-bottom: 8px; position: relative; }
     .trade-input-title { font-size: 12px; font-weight: 700; margin-bottom: 8px; color: var(--text2); }
+    .trade-remove { position: absolute; top: 10px; right: 10px; background: none; border: none; color: var(--text2); font-size: 18px; cursor: pointer; line-height: 1; padding: 0 4px; }
 
     /* スピナー */
     .spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: middle; margin-right: 6px; }
@@ -166,6 +168,7 @@
           <div class="card-title">取引結果を記録</div>
           <p style="font-size:12px;color:var(--text2);margin-bottom:10px">実際に行った取引を記録してください。</p>
           <div id="trade-inputs"></div>
+          <button onclick="addTradeInput()" style="width:100%;padding:9px;background:none;border:1px dashed var(--border);border-radius:8px;color:var(--text2);font-size:13px;cursor:pointer;margin-bottom:12px">＋ 取引を追加</button>
           <button class="btn btn-success" onclick="saveResult()">結果を保存</button>
         </div>
       </div>
@@ -273,33 +276,26 @@
 
 <script>
 let proposalId = null;
+let tradeCount = 0;
 
 // ── 初期化 ────────────────────────────────────────────────────────────────
 (async function init() {
   document.getElementById('hdr-date').textContent =
-    new Date().toLocaleDateString('ja-JP', {month:'long', day:'numeric', weekday:'short'});
+    new Date().toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric', weekday: 'short' });
   await loadStatus();
   await loadTodayProposal();
-  // ページ読み込み時にバックグラウンド生成中なら自動でポーリング再開
+
+  // ページロード時にポーリング状態を復元
   const s = await fetch('/api/generate/status').then(r => r.json()).catch(() => ({}));
   if (s.status === 'running') {
-    const msg = document.getElementById('gen-msg');
     const btn = document.getElementById('btn-gen');
+    const msg = document.getElementById('gen-msg');
     btn.disabled = true;
     msg.style.display = 'block';
-    msg.innerHTML = '<span class="spinner"></span>AIが分析中です（バックグラウンド継続中）...';
+    msg.innerHTML = '<span class="spinner"></span>AIが分析中（前回の続き）...';
     _startPolling(msg, btn);
   }
 })();
-
-// ── タブ ──────────────────────────────────────────────────────────────────
-function showTab(btn, name) {
-  document.querySelectorAll('.tab-content').forEach(e => e.classList.remove('active'));
-  document.querySelectorAll('.tab-btn').forEach(e => e.classList.remove('active'));
-  document.getElementById('tab-' + name).classList.add('active');
-  btn.classList.add('active');
-  if (name === 'history') loadHistory();
-}
 
 // ── ステータス ─────────────────────────────────────────────────────────────
 async function loadStatus() {
@@ -312,14 +308,15 @@ async function loadStatus() {
   document.getElementById('not-configured').style.display = 'none';
   document.getElementById('today-main').style.display = 'block';
 
-  document.getElementById('hdr-cash').textContent = fmt(data.current_cash);
-  document.getElementById('hdr-target').textContent = fmt(data.target_amount);
-  document.getElementById('hdr-days').textContent = data.remaining_days != null ? data.remaining_days + '日' : '---';
+  document.getElementById('hdr-cash').textContent = (data.current_cash || 0).toLocaleString() + '円';
+  document.getElementById('hdr-target').textContent = (data.target_amount || 0).toLocaleString() + '円';
+  document.getElementById('hdr-days').textContent = (data.remaining_days ?? '--') + '日';
 
   const pnl = data.total_pnl || 0;
   const pnlEl = document.getElementById('hdr-pnl');
   pnlEl.textContent = (pnl >= 0 ? '+' : '') + pnl.toLocaleString() + '円';
-  pnlEl.className = 'asset-value ' + (pnl > 0 ? 'red' : pnl < 0 ? 'green' : '');
+  // 利益=緑、損失=赤（日本株標準）
+  pnlEl.className = 'asset-value ' + (pnl > 0 ? 'green' : pnl < 0 ? 'red' : '');
 
   // 進捗（元手→目標）
   if (data.capital && data.target_amount && data.capital < data.target_amount) {
@@ -457,11 +454,9 @@ async function generate() {
     }
     const data = await res.json();
     if (data.status === 'done') {
-      // キャッシュ済み
       await _onGenerateDone();
       return;
     }
-    // バックグラウンドで生成中 → ポーリング開始
     _startPolling(msg, btn);
   } catch(e) {
     msg.textContent = 'エラー: ' + e.message;
@@ -521,7 +516,7 @@ async function _onGenerateDone() {
 function displayProposal(data) {
   proposalId = data.id;
   document.getElementById('proposal-area').style.display = 'block';
-  document.getElementById('btn-gen').textContent = '今日の打ち手（生成済み）';
+  document.getElementById('btn-gen').textContent = '今日の打ち手（再生成）';
   document.getElementById('gen-msg').style.display = 'none';
 
   const conf = data.confidence || 50;
@@ -538,52 +533,81 @@ function displayProposal(data) {
   document.getElementById('col-bear-body').textContent = data.bear_analysis || '';
   document.getElementById('col-risk-body').textContent = data.risk_analysis || '';
 
-  // 結果入力フォーム（取引1件分のデフォルト）
-  document.getElementById('trade-inputs').innerHTML = `
-    <div class="trade-input">
-      <div class="trade-input-title">取引1</div>
-      <div class="form-row">
-        <div class="form-group">
-          <label class="form-label">銘柄コード</label>
-          <input class="form-input trade-ticker" type="text" placeholder="7203.T" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">買/売</label>
-          <select class="form-input trade-action">
-            <option value="buy">買い</option>
-            <option value="sell">売り</option>
-            <option value="hold">見送り</option>
-          </select>
-        </div>
+  // 結果入力フォームを初期化（1件目を追加）
+  tradeCount = 0;
+  document.getElementById('trade-inputs').innerHTML = '';
+  document.getElementById('result-card').style.display = 'block';
+  addTradeInput();
+}
+
+// ── 取引入力欄の追加・削除 ────────────────────────────────────────────────
+function addTradeInput(ticker = '', companyName = '', action = 'buy', shares = '', price = '') {
+  tradeCount++;
+  const n = tradeCount;
+  const div = document.createElement('div');
+  div.className = 'trade-input';
+  div.id = `trade-block-${n}`;
+  div.innerHTML = `
+    <div class="trade-input-title">取引${n}${ticker ? ' — ' + ticker : ''}</div>
+    ${n > 1 ? `<button class="trade-remove" onclick="removeTradeInput(${n})">✕</button>` : ''}
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">銘柄コード</label>
+        <input class="form-input trade-ticker" type="text" placeholder="7203.T" value="${ticker}" />
       </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label class="form-label">株数</label>
-          <input class="form-input trade-shares" type="number" placeholder="100" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">約定価格（円）</label>
-          <input class="form-input trade-price" type="number" placeholder="2500" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">損益（売りのみ）</label>
-          <input class="form-input trade-pnl" type="number" placeholder="5000" />
-        </div>
+      <div class="form-group">
+        <label class="form-label">社名</label>
+        <input class="form-input trade-company" type="text" placeholder="トヨタ" value="${companyName}" />
       </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">買/売</label>
+        <select class="form-input trade-action">
+          <option value="buy" ${action==='buy'?'selected':''}>買い</option>
+          <option value="sell" ${action==='sell'?'selected':''}>売り</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">株数</label>
+        <input class="form-input trade-shares" type="number" placeholder="10" value="${shares}" />
+      </div>
+      <div class="form-group">
+        <label class="form-label">約定価格（円）</label>
+        <input class="form-input trade-price" type="number" placeholder="2500" value="${price}" />
+      </div>
+    </div>
+    <div class="form-group" id="pnl-group-${n}" style="display:none">
+      <label class="form-label">損益（円）</label>
+      <input class="form-input trade-pnl" type="number" placeholder="5000" />
     </div>`;
+  // 売りのとき損益欄を表示
+  div.querySelector('.trade-action').addEventListener('change', function() {
+    document.getElementById(`pnl-group-${n}`).style.display = this.value === 'sell' ? 'block' : 'none';
+  });
+  if (action === 'sell') {
+    div.querySelector(`#pnl-group-${n}`).style.display = 'block';
+  }
+  document.getElementById('trade-inputs').appendChild(div);
+}
+
+function removeTradeInput(n) {
+  const el = document.getElementById(`trade-block-${n}`);
+  if (el) el.remove();
 }
 
 // ── 結果保存 ──────────────────────────────────────────────────────────────
 async function saveResult() {
   const trades = [];
   document.querySelectorAll('.trade-input').forEach(el => {
-    const ticker = el.querySelector('.trade-ticker')?.value.trim().toUpperCase();
-    const action = el.querySelector('.trade-action')?.value;
-    const shares = parseInt(el.querySelector('.trade-shares')?.value || '0');
-    const price  = parseFloat(el.querySelector('.trade-price')?.value || '0');
-    const pnl    = parseInt(el.querySelector('.trade-pnl')?.value || '0');
+    const ticker  = el.querySelector('.trade-ticker')?.value.trim().toUpperCase();
+    const company = el.querySelector('.trade-company')?.value.trim() || '';
+    const action  = el.querySelector('.trade-action')?.value;
+    const shares  = parseInt(el.querySelector('.trade-shares')?.value || '0');
+    const price   = parseFloat(el.querySelector('.trade-price')?.value || '0');
+    const pnl     = parseInt(el.querySelector('.trade-pnl')?.value || '0');
     if (ticker && action && shares > 0 && price > 0) {
-      trades.push({ ticker, action, shares, price, pnl: pnl || 0, company_name: '' });
+      trades.push({ ticker, company_name: company, action, shares, price, pnl: pnl || 0 });
     }
   });
   if (trades.length === 0) { toast('取引を1件以上入力してください'); return; }
@@ -595,7 +619,6 @@ async function saveResult() {
   });
   if (res.ok) {
     toast('結果を保存しました');
-    document.getElementById('result-card').style.display = 'none';
     await loadStatus();
   } else {
     toast('保存エラー');
@@ -608,8 +631,10 @@ async function loadHistory() {
   const el = document.getElementById('history-list');
   if (!data.history?.length) { el.innerHTML = '<div class="status-msg">履歴がありません</div>'; return; }
   el.innerHTML = data.history.map(h => {
-    const pnlClass = h.day_pnl > 0 ? 'red' : h.day_pnl < 0 ? 'green' : '';
-    const pnlText = h.day_pnl != null ? (h.day_pnl >= 0 ? '+' : '') + h.day_pnl.toLocaleString() + '円' : '未記録';
+    const pnl = h.day_pnl || 0;
+    // 利益=緑、損失=赤
+    const pnlClass = pnl > 0 ? 'green' : pnl < 0 ? 'red' : '';
+    const pnlText = h.day_pnl != null ? (pnl >= 0 ? '+' : '') + pnl.toLocaleString() + '円' : '未記録';
     const chips = (h.trades || []).map(t =>
       `<span class="trade-chip chip-${t.action}">${t.ticker} ${t.action === 'buy' ? '買' : t.action === 'sell' ? '売' : '保'}</span>`
     ).join('');
@@ -637,16 +662,23 @@ async function saveSettings() {
 }
 
 // ── 折りたたみ ────────────────────────────────────────────────────────────
-function toggleCol(id) { document.getElementById(id).classList.toggle('open'); }
+function toggleCol(id) {
+  document.getElementById(id).classList.toggle('open');
+}
 
-// ── ユーティリティ ────────────────────────────────────────────────────────
-function fmt(n) { return n != null ? n.toLocaleString('ja-JP') + '円' : '---'; }
-let toastTimer;
+function showTab(btn, name) {
+  document.querySelectorAll('.tab-content').forEach(e => e.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(e => e.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  btn.classList.add('active');
+  if (name === 'history') loadHistory();
+}
+
 function toast(msg) {
   const el = document.getElementById('toast');
-  el.textContent = msg; el.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), 3000);
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2500);
 }
 </script>
 </body>
