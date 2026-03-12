@@ -383,7 +383,19 @@ def collect_stock_data(tickers: list[str]) -> dict:
             logger.error(f"テクニカル計算エラー ({ticker}): {e}")
             technical = {"error": str(e), "ticker": ticker}
 
+        # 社名をyfinanceから取得（AIが記憶から誤った社名を出力しないよう正確な名前を渡す）
+        company_name = ""
+        try:
+            info = yf.Ticker(ticker).fast_info
+            company_name = getattr(info, "company_name", "") or ""
+            if not company_name:
+                info2 = yf.Ticker(ticker).info
+                company_name = info2.get("shortName") or info2.get("longName") or ""
+        except Exception:
+            pass
+
         result["stocks"][ticker] = {
+            "company_name": company_name,
             "technical": technical,
             "fundamental": get_fundamental_data(ticker),
             "news": get_news_rss(ticker),

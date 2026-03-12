@@ -588,7 +588,8 @@ def _format_data_for_agents(raw_data: dict) -> str:
         news = stock.get("news", [])
         web  = stock.get("web_search", "")
 
-        lines.append(f"### {ticker}")
+        company_name = stock.get("company_name", "")
+        lines.append(f"### {ticker} {company_name}（社名は必ずこれを使うこと）")
         lines.append(f"株価: {tech.get('current_price')}円 (前日比: {tech.get('price_change_pct')}%)")
         lines.append(f"MA5/25/75: {tech.get('ma5')}/{tech.get('ma25')}/{tech.get('ma75')}")
         lines.append(f"RSI14: {tech.get('rsi14')} / MACD: {tech.get('macd', {}).get('macd')} Signal: {tech.get('macd', {}).get('signal')}")
