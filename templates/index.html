@@ -325,7 +325,8 @@ async function loadStatus() {
     document.getElementById('hdr-fill').style.width = Math.min(pct, 100) + '%';
   }
 
-  // ポートフォリオ表示
+  // ポートフォリオ表示（損益自動計算用にグローバル保持）
+  window._portfolio = data.portfolio || [];
   renderPortfolio(data.portfolio || []);
 
   // 設定フォームに反映
@@ -426,6 +427,37 @@ async function manualRecord() {
   } else {
     toast('記録エラー');
   }
+}
+
+// ── 提案テキストから取引を自動解析 ───────────────────────────────────────────
+function parseProposalTrades(text) {
+  const trades = [];
+  // 買い注文テーブルと売り注文テーブルを順に探す
+  const sections = [
+    { pattern: /###\s*買い注文[\s\S]*?\n(\|[^\n]+\|\n\|[-|]+\|\n)([\s\S]*?)(?=###|$)/, action: 'buy' },
+    { pattern: /###\s*売り注文[\s\S]*?\n(\|[^\n]+\|\n\|[-|]+\|\n)([\s\S]*?)(?=###|$)/, action: 'sell' },
+  ];
+  sections.forEach(({ pattern, action }) => {
+    const m = text.match(pattern);
+    if (!m) return;
+    const rows = m[2].trim().split('\n');
+    rows.forEach(row => {
+      if (!row.startsWith('|')) return;
+      const cells = row.split('|').map(c => c.trim()).filter(c => c);
+      if (cells.length < 2) return;
+      const ticker = (cells[0].match(/\d{4}\.T/) || [])[0];
+      if (!ticker) return;
+      const company = cells[1] || '';
+      const sharesMatch = (cells[2] || '').match(/\d+/);
+      const shares = sharesMatch ? sharesMatch[0] : '';
+      // 価格帯セル（カンマ区切り数値を抽出）
+      const priceCell = cells[4] || cells[3] || '';
+      const priceMatch = priceCell.replace(/,/g, '').match(/\d+/);
+      const price = priceMatch ? priceMatch[0] : '';
+      trades.push({ ticker, company, action, shares, price });
+    });
+  });
+  return trades;
 }
 
 // ── 今日の提案読み込み ──────────────────────────────────────────────────────
@@ -533,11 +565,16 @@ function displayProposal(data) {
   document.getElementById('col-bear-body').textContent = data.bear_analysis || '';
   document.getElementById('col-risk-body').textContent = data.risk_analysis || '';
 
-  // 結果入力フォームを初期化（1件目を追加）
+  // 結果入力フォームを初期化（提案から自動入力）
   tradeCount = 0;
   document.getElementById('trade-inputs').innerHTML = '';
   document.getElementById('result-card').style.display = 'block';
-  addTradeInput();
+  const parsed = parseProposalTrades(data.final_proposal || '');
+  if (parsed.length > 0) {
+    parsed.forEach(t => addTradeInput(t.ticker, t.company, t.action, t.shares, t.price));
+  } else {
+    addTradeInput();
+  }
 }
 
 // ── 取引入力欄の追加・削除 ────────────────────────────────────────────────
@@ -578,15 +615,35 @@ function addTradeInput(ticker = '', companyName = '', action = 'buy', shares = '
       </div>
     </div>
     <div class="form-group" id="pnl-group-${n}" style="display:none">
-      <label class="form-label">損益（円）</label>
-      <input class="form-input trade-pnl" type="number" placeholder="5000" />
+      <label class="form-label">損益（円）<span style="font-size:11px;color:var(--text2);margin-left:6px">約定価格・株数入力で自動計算</span></label>
+      <input class="form-input trade-pnl" type="number" placeholder="自動計算" id="pnl-${n}" />
     </div>`;
-  // 売りのとき損益欄を表示
-  div.querySelector('.trade-action').addEventListener('change', function() {
+  // 売りのとき損益欄を表示、約定価格・株数から自動計算
+  const actionSel = div.querySelector('.trade-action');
+  const priceInput = div.querySelector('.trade-price');
+  const sharesInput = div.querySelector('.trade-shares');
+  const tickerInput = div.querySelector('.trade-ticker');
+  function calcPnl() {
+    const t = tickerInput.value.trim().toUpperCase();
+    const p = parseFloat(priceInput.value);
+    const s = parseInt(sharesInput.value);
+    if (!t || isNaN(p) || isNaN(s)) return;
+    const holding = (window._portfolio || []).find(h => h.ticker === t);
+    if (holding) {
+      const pnl = Math.round((p - holding.avg_price) * s);
+      document.getElementById(`pnl-${n}`).value = pnl;
+    }
+  }
+  actionSel.addEventListener('change', function() {
     document.getElementById(`pnl-group-${n}`).style.display = this.value === 'sell' ? 'block' : 'none';
+    if (this.value === 'sell') calcPnl();
   });
+  priceInput.addEventListener('input', () => { if (actionSel.value === 'sell') calcPnl(); });
+  sharesInput.addEventListener('input', () => { if (actionSel.value === 'sell') calcPnl(); });
+  tickerInput.addEventListener('change', () => { if (actionSel.value === 'sell') calcPnl(); });
   if (action === 'sell') {
     div.querySelector(`#pnl-group-${n}`).style.display = 'block';
+    setTimeout(calcPnl, 0);
   }
   document.getElementById('trade-inputs').appendChild(div);
 }
