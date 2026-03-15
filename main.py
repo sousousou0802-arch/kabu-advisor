@@ -306,6 +306,17 @@ def api_proposal_today(db: Session = Depends(get_db)):
 
 @app.post("/api/result")
 def api_result(req: TradeResultRequest, db: Session = Depends(get_db)):
+    from database.db import Portfolio
+
+    # 売り記録の現金計算のため、ポートフォリオ更新前に実際の保有株数を記録しておく
+    pre_sell_shares: dict[str, int] = {}
+    for trade in req.trades:
+        if trade.get("action") == "sell":
+            t = (trade.get("ticker") or "").upper()
+            if t and t not in pre_sell_shares:
+                pos = db.query(Portfolio).filter(Portfolio.ticker == t).first()
+                pre_sell_shares[t] = pos.shares if pos else 0
+
     # トレード結果を記録
     for trade in req.trades:
         save_trade_result(db, {
@@ -331,17 +342,18 @@ def api_result(req: TradeResultRequest, db: Session = Depends(get_db)):
 
     # 現金残高を取引内容から自動計算
     settings = get_settings(db)
-    current_cash = settings.current_cash or 0
+    current_cash = (settings.current_cash or 0) if settings else 0
     for trade in req.trades:
         action = trade.get("action")
+        ticker = (trade.get("ticker") or "").upper()
         shares = trade.get("shares", 0) or 0
         price = trade.get("price", 0) or 0
-        pnl = trade.get("pnl", 0) or 0
         if action == "buy":
             current_cash -= int(shares * price)
         elif action == "sell":
-            # 売却代金（shares×price）を加算、損益は約定価格に含まれるため別途加算しない
-            current_cash += int(shares * price)
+            # 実際に保有していた株数だけ現金に加算（記録ミスで超過しても過剰加算しない）
+            actual = min(shares, pre_sell_shares.get(ticker, shares))
+            current_cash += int(actual * price)
     upsert_settings(db, {"current_cash": current_cash})
 
     return {"ok": True}
@@ -407,7 +419,8 @@ def api_history(db: Session = Depends(get_db)):
         if p_date_str not in seen_dates:
             t_list = t_list + [t for t in orphan_trades if str(t.date) == p_date_str]
             seen_dates.add(p_date_str)
-        day_pnl = sum(t.pnl for t in t_list if t.pnl is not None)
+        pnl_values = [t.pnl for t in t_list if t.pnl is not None]
+        day_pnl = sum(pnl_values) if pnl_values else None
         history.append({
             "date": p_date_str,
             "proposal_id": p.id,
