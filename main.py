@@ -351,23 +351,8 @@ def api_result(req: TradeResultRequest, db: Session = Depends(get_db)):
         elif action == "sell" and ticker and shares:
             reduce_position(db, ticker, shares)
 
-    # 現金残高を取引内容から自動計算（全オブジェクトを明示的に期限切れにしてDB最新値を取得）
-    db.expire_all()
-    settings = get_settings(db)
-    current_cash = (settings.current_cash or 0) if settings else 0
-    for trade in req.trades:
-        action = trade.get("action")
-        ticker = (trade.get("ticker") or "").upper()
-        shares = trade.get("shares", 0) or 0
-        price = trade.get("price", 0) or 0
-        if action == "buy":
-            current_cash -= int(shares * price)
-        elif action == "sell":
-            # 保有記録がある場合のみ上限キャップ。ない場合はそのまま加算
-            held = pre_sell_shares.get(ticker)
-            actual = min(shares, held) if held else shares
-            current_cash += int(actual * price)
-    upsert_settings(db, {"current_cash": current_cash})
+    # 現金残高を「元手 − 保有コスト合計 + 確定損益」で再計算
+    _sync_cash(db)
 
     return {"ok": True}
 
@@ -379,43 +364,52 @@ def api_portfolio_edit(ticker: str, req: EditPositionRequest, db: Session = Depe
     if not pos:
         raise HTTPException(status_code=404, detail="銘柄が見つかりません")
 
-    # 修正前のコスト
-    old_cost = int(pos.shares * pos.avg_price)
-    logger.info(f"[portfolio_edit] {ticker}: 変更前 shares={pos.shares} avg_price={pos.avg_price} old_cost={old_cost}")
-
-    deleted = False
     if req.company_name is not None:
         pos.company_name = req.company_name
     if req.shares is not None:
         if req.shares <= 0:
             db.delete(pos)
-            deleted = True
         else:
             pos.shares = req.shares
-    if not deleted and req.avg_price is not None:
-        pos.avg_price = req.avg_price
+    if req.shares is None or req.shares > 0:
+        if req.avg_price is not None:
+            pos.avg_price = req.avg_price
 
-    # 修正後コスト（コミット前にメモリ上の値から計算）
-    new_cost = 0 if deleted else int(pos.shares * pos.avg_price)
-    cash_delta = old_cost - new_cost
-    logger.info(f"[portfolio_edit] {ticker}: 変更後 shares={req.shares} avg_price={req.avg_price} new_cost={new_cost} cash_delta={cash_delta}")
-
-    # ① ポートフォリオ変更を先にコミット
     db.commit()
-    logger.info(f"[portfolio_edit] {ticker}: ポートフォリオ commit 完了")
 
-    # ② 現金残高を更新（別トランザクション）
-    if cash_delta != 0:
-        settings = get_settings(db)
-        before_cash = settings.current_cash if settings else None
-        if settings:
-            new_cash = (settings.current_cash or 0) + cash_delta
-            upsert_settings(db, {"current_cash": new_cash})
-            logger.info(f"[portfolio_edit] 現金更新: {before_cash} → {new_cash}")
-    else:
-        logger.info(f"[portfolio_edit] cash_delta=0 のため現金変更なし")
+    # 現金残高を「元手 − 保有コスト合計 + 確定損益」で再計算
+    _sync_cash(db)
 
     return {"ok": True}
+
+
+def _sync_cash(db: Session):
+    """現金残高を「元手 − 保有コスト合計 + 確定損益」で再計算して保存する"""
+    settings = get_settings(db)
+    if not settings or not settings.capital:
+        return
+    capital = settings.capital
+    portfolio = get_portfolio(db)
+    portfolio_cost = sum(int(p.shares * p.avg_price) for p in portfolio)
+    total_pnl = get_total_pnl(db)
+    new_cash = capital - portfolio_cost + total_pnl
+    logger.info(f"[sync_cash] capital={capital} portfolio_cost={portfolio_cost} total_pnl={total_pnl} → new_cash={new_cash}")
+    upsert_settings(db, {"current_cash": new_cash})
+
+
+@app.post("/api/recalc_cash")
+def api_recalc_cash(db: Session = Depends(get_db)):
+    """現金残高を手動で再計算する（過去の誤差修正用）"""
+    settings = get_settings(db)
+    if not settings:
+        raise HTTPException(status_code=400, detail="設定が未完了です")
+    _sync_cash(db)
+    s = get_settings(db)
+    capital = settings.capital or 0
+    portfolio = get_portfolio(db)
+    portfolio_cost = sum(int(p.shares * p.avg_price) for p in portfolio)
+    total_pnl = get_total_pnl(db)
+    return {"ok": True, "current_cash": s.current_cash, "capital": capital, "portfolio_cost": portfolio_cost, "total_pnl": total_pnl}
 
 
 @app.get("/api/prices")

@@ -316,6 +316,15 @@
       </div>
       <button class="btn btn-primary" onclick="saveSettings()">設定を保存</button>
     </div>
+    <div class="card" style="margin-top:12px">
+      <div class="card-title">現金残高を修正</div>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:10px">
+        保有数の入力ミスなどで現金がズレている場合に使います。<br>
+        <b>元手 − 保有コスト合計 + 確定損益</b> で正しい現金を自動計算して上書きします。
+      </p>
+      <div id="recalc-preview" style="font-size:13px;color:var(--text2);margin-bottom:10px;background:var(--surface2);border-radius:8px;padding:10px"></div>
+      <button class="btn" style="background:var(--yellow);color:#000" onclick="recalcCash()">現金を再計算して修正する</button>
+    </div>
   </div>
 
 </div>
@@ -870,6 +879,35 @@ async function loadHistory() {
   }).join('');
 }
 
+// ── 現金再計算 ────────────────────────────────────────────────────────────
+async function recalcCash() {
+  const res = await fetch('/api/recalc_cash', { method: 'POST' });
+  if (!res.ok) { toast('再計算エラー'); return; }
+  const d = await res.json();
+  toast(`現金を ${d.current_cash.toLocaleString()}円 に修正しました`);
+  await loadStatus();
+  updateRecalcPreview(d);
+}
+
+async function updateRecalcPreview(d) {
+  if (!d) {
+    const status = await fetch('/api/status?_=' + Date.now()).then(r => r.json()).catch(() => ({}));
+    if (!status.configured) return;
+    const portfolio = status.portfolio || [];
+    const portfolioCost = portfolio.reduce((s, p) => s + p.shares * p.avg_price, 0);
+    d = {
+      capital: status.capital || 0,
+      portfolio_cost: Math.round(portfolioCost),
+      total_pnl: status.total_pnl || 0,
+      current_cash: (status.capital || 0) - Math.round(portfolioCost) + (status.total_pnl || 0),
+    };
+  }
+  const el = document.getElementById('recalc-preview');
+  if (el) {
+    el.innerHTML = `元手 <b>${(d.capital||0).toLocaleString()}円</b> − 保有コスト <b>${(d.portfolio_cost||0).toLocaleString()}円</b> + 確定損益 <b>${(d.total_pnl||0).toLocaleString()}円</b> = <b style="color:var(--green)">${(d.current_cash||0).toLocaleString()}円</b>`;
+  }
+}
+
 // ── 設定保存 ──────────────────────────────────────────────────────────────
 async function saveSettings() {
   const capital  = parseInt(document.getElementById('set-capital').value);
@@ -896,6 +934,7 @@ function showTab(btn, name) {
   btn.classList.add('active');
   if (name === 'history') loadHistory();
   if (name === 'portfolio') loadPortfolioPrices();
+  if (name === 'settings') updateRecalcPreview(null);
 }
 
 function toast(msg) {
