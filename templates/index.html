@@ -233,11 +233,27 @@
   <div id="tab-portfolio" class="tab-content">
     <div class="card">
       <div class="card-title">現在の保有銘柄</div>
+      <div id="portfolio-summary" style="display:none;background:var(--surface2);border-radius:8px;padding:10px 12px;margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <span style="font-size:11px;color:var(--text2)">株式評価額（取得単価ベース）</span>
+          <span id="port-total-value" style="font-size:15px;font-weight:700"></span>
+        </div>
+        <div style="display:flex;gap:16px">
+          <div>
+            <div style="font-size:10px;color:var(--text2);margin-bottom:2px">銘柄数</div>
+            <div id="port-count" style="font-size:13px;font-weight:700"></div>
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--text2);margin-bottom:2px">含み損益（概算）</div>
+            <div id="port-unrealized" style="font-size:13px;font-weight:700"></div>
+          </div>
+        </div>
+      </div>
       <div id="portfolio-list"><div class="status-msg">保有なし</div></div>
     </div>
     <div class="card" style="margin-top:12px">
-      <div class="card-title">取引を手動記録（提案消失時の復旧用）</div>
-      <p style="font-size:12px;color:var(--text2);margin-bottom:10px">通常は今日タブの「取引結果を記録」を使ってください。</p>
+      <div class="card-title">取引を手動記録</div>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:10px">今日タブに提案がない日や、提案外の取引を記録する場合に使います。</p>
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">銘柄コード（例: 3626.T）</label>
@@ -416,15 +432,35 @@ async function loadStatus() {
 // ── ポートフォリオ描画 ──────────────────────────────────────────────────────
 function renderPortfolio(portfolio) {
   const el = document.getElementById('portfolio-list');
+  const summaryEl = document.getElementById('portfolio-summary');
   if (!portfolio.length) {
     el.innerHTML = '<div class="status-msg">保有なし</div>';
+    summaryEl.style.display = 'none';
     return;
   }
-  el.innerHTML = portfolio.map(p => `
+
+  // サマリー計算
+  const totalCost = portfolio.reduce((s, p) => s + p.shares * p.avg_price, 0);
+  // total_assetsからcurrent_cashを引いた値が株式評価額（ただし取得単価ベース）
+  // 含み損益はtotal_pnl（確定）とは別に計算できないため「---」または概算を表示
+  summaryEl.style.display = 'block';
+  document.getElementById('port-total-value').textContent = Math.round(totalCost).toLocaleString() + '円';
+  document.getElementById('port-count').textContent = portfolio.length + '銘柄';
+  document.getElementById('port-unrealized').textContent = '取得単価ベース';
+  document.getElementById('port-unrealized').style.color = 'var(--text2)';
+  document.getElementById('port-unrealized').style.fontSize = '11px';
+
+  el.innerHTML = portfolio.map(p => {
+    const cost = Math.round(p.shares * p.avg_price);
+    return `
     <div class="port-item" id="port-${p.ticker}">
       <div class="port-left">
         <div class="ticker">${p.ticker} <span style="font-size:12px;color:var(--text2)">${p.company_name || ''}</span></div>
         <div class="detail">${p.shares}株 @ ${Math.round(p.avg_price).toLocaleString()}円</div>
+      </div>
+      <div style="text-align:right;margin-right:10px;flex-shrink:0">
+        <div style="font-size:13px;font-weight:700">${cost.toLocaleString()}円</div>
+        <div style="font-size:10px;color:var(--text2)">評価額</div>
       </div>
       <button onclick="startEditPortfolio('${p.ticker}','${p.company_name||''}',${p.shares},${p.avg_price})" style="flex-shrink:0;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;font-weight:600">編集</button>
     </div>
@@ -445,7 +481,8 @@ function renderPortfolio(portfolio) {
       </div>
       <button onclick="saveEditPortfolio('${p.ticker}')" class="btn btn-primary" style="margin-right:8px">保存</button>
       <button onclick="cancelEditPortfolio('${p.ticker}')" style="background:none;border:none;color:var(--text2);cursor:pointer">キャンセル</button>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 
 function startEditPortfolio(ticker, name, shares, price) {
