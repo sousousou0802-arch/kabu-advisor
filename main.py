@@ -87,6 +87,10 @@ class EditPositionRequest(BaseModel):
     avg_price: Optional[float] = None
 
 
+class EditTradeRequest(BaseModel):
+    pnl: Optional[int] = None
+
+
 # ── API ───────────────────────────────────────────────────────────────────────
 
 @app.get("/api/status")
@@ -413,6 +417,17 @@ def api_recalc_cash(db: Session = Depends(get_db)):
     return {"ok": True, "current_cash": s.current_cash, "capital": capital, "portfolio_cost": portfolio_cost, "total_pnl": total_pnl}
 
 
+@app.patch("/api/trade/{trade_id}")
+def api_trade_edit(trade_id: int, req: EditTradeRequest, db: Session = Depends(get_db)):
+    from database.db import TradeResult
+    trade = db.query(TradeResult).filter(TradeResult.id == trade_id).first()
+    if not trade:
+        raise HTTPException(status_code=404, detail="取引が見つかりません")
+    trade.pnl = req.pnl
+    db.commit()
+    return {"ok": True}
+
+
 @app.get("/api/prices")
 def api_prices(db: Session = Depends(get_db)):
     """保有銘柄の現在株価をyfinanceから取得する"""
@@ -462,7 +477,7 @@ def api_history(db: Session = Depends(get_db)):
             "final_proposal": p.final_proposal,
             "confidence": p.confidence,
             "trades": [
-                {"ticker": t.ticker, "company_name": t.company_name,
+                {"id": t.id, "ticker": t.ticker, "company_name": t.company_name,
                  "action": t.action, "shares": t.shares,
                  "price": t.price, "pnl": t.pnl}
                 for t in t_list

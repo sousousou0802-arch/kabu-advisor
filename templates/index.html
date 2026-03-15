@@ -877,19 +877,42 @@ async function loadHistory() {
   if (!data.history?.length) { el.innerHTML = '<div class="status-msg">履歴がありません</div>'; return; }
   el.innerHTML = data.history.map(h => {
     const pnl = h.day_pnl || 0;
-    // 利益=緑、損失=赤
     const pnlClass = pnl > 0 ? 'green' : pnl < 0 ? 'red' : '';
     const pnlText = h.day_pnl != null ? (pnl >= 0 ? '+' : '') + pnl.toLocaleString() + '円' : '未記録';
-    const chips = (h.trades || []).map(t =>
-      `<span class="trade-chip chip-${t.action}">${t.ticker} ${t.action === 'buy' ? '買' : t.action === 'sell' ? '売' : '保'}</span>`
-    ).join('');
+    const chips = (h.trades || []).map(t => {
+      const label = t.action === 'buy' ? '買' : t.action === 'sell' ? '売' : '保';
+      const editBtn = t.action === 'sell'
+        ? `<button onclick="editTradePnl(${t.id},'${t.ticker}',${t.pnl ?? ''})" style="margin-left:4px;font-size:10px;padding:1px 5px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text2);cursor:pointer">損益編集</button>`
+        : '';
+      return `<span class="trade-chip chip-${t.action}">${t.ticker} ${label}${t.action === 'sell' && t.pnl != null ? ' ' + (t.pnl >= 0 ? '+' : '') + t.pnl.toLocaleString() + '円' : ''}</span>${editBtn}`;
+    }).join('');
     const preview = (h.final_proposal || '').substring(0, 60) + '...';
     return `<div class="history-item">
       <div class="history-header"><span class="history-date">${h.date}</span><span class="${pnlClass}" style="font-weight:700">${pnlText}</span></div>
-      ${chips ? `<div style="margin:5px 0">${chips}</div>` : ''}
+      ${chips ? `<div style="margin:5px 0;display:flex;flex-wrap:wrap;gap:4px;align-items:center">${chips}</div>` : ''}
       <div class="history-preview">${preview}</div>
     </div>`;
   }).join('');
+}
+
+// ── 取引損益編集 ──────────────────────────────────────────────────────────
+async function editTradePnl(tradeId, ticker, currentPnl) {
+  const val = prompt(`${ticker} の損益（円）を入力してください\n現在: ${currentPnl !== '' ? currentPnl : '未入力'}`, currentPnl !== '' ? currentPnl : '');
+  if (val === null) return;
+  const pnl = parseInt(val);
+  if (isNaN(pnl)) { toast('数値を入力してください'); return; }
+  const res = await fetch(`/api/trade/${tradeId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pnl }),
+  });
+  if (res.ok) {
+    toast(`損益を ${pnl >= 0 ? '+' : ''}${pnl.toLocaleString()}円 に更新しました`);
+    await loadHistory();
+    await loadStatus();
+  } else {
+    toast('更新エラー');
+  }
 }
 
 // ── 現金再計算 ────────────────────────────────────────────────────────────
