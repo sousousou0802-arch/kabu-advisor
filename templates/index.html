@@ -346,7 +346,7 @@ let tradeCount = 0;
 
 // ── ステータス ─────────────────────────────────────────────────────────────
 async function loadStatus() {
-  const data = await fetch('/api/status').then(r => r.json()).catch(() => ({}));
+  const data = await fetch('/api/status?_=' + Date.now()).then(r => r.json()).catch(() => ({}));
   if (!data.configured) {
     document.getElementById('not-configured').style.display = 'block';
     document.getElementById('today-main').style.display = 'none';
