@@ -121,7 +121,7 @@
         <div class="asset-value green" id="hdr-cash">---</div>
       </div>
       <div class="asset-box">
-        <div class="asset-label">総資産</div>
+        <div class="asset-label">目標</div>
         <div class="asset-value yellow" id="hdr-target">---</div>
       </div>
       <div class="asset-box">
@@ -356,7 +356,7 @@ async function loadStatus() {
   document.getElementById('today-main').style.display = 'block';
 
   document.getElementById('hdr-cash').textContent = (data.current_cash || 0).toLocaleString() + '円';
-  document.getElementById('hdr-target').textContent = (data.total_assets || 0).toLocaleString() + '円';
+  document.getElementById('hdr-target').textContent = (data.target_amount || 0).toLocaleString() + '円';
   document.getElementById('hdr-days').textContent = (data.remaining_days ?? '--') + '日';
 
   const pnl = data.total_pnl || 0;
