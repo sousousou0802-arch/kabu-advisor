@@ -428,7 +428,7 @@ function renderPortfolio(portfolio) {
       </div>
       <button onclick="startEditPortfolio('${p.ticker}','${p.company_name||''}',${p.shares},${p.avg_price})" style="flex-shrink:0;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;font-weight:600">編集</button>
     </div>
-    <div id="port-edit-${p.ticker}" style="display:none;padding:10px;background:var(--card);border-radius:8px;margin-bottom:8px">
+    <div id="port-edit-${p.ticker}" style="display:none;padding:10px;background:var(--surface2);border-radius:8px;margin-bottom:8px">
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">社名</label>
@@ -492,7 +492,7 @@ async function manualRecord() {
   const res = await fetch('/api/result', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ trades: [{ ticker, company_name: name, action, shares, price, pnl: 0 }] }),
+    body: JSON.stringify({ trades: [{ ticker, company_name: name, action, shares, price, pnl: null }] }),
   });
   if (res.ok) {
     toast('記録しました');
@@ -751,9 +751,12 @@ async function saveResult() {
     const action  = el.querySelector('.trade-action')?.value;
     const shares  = parseInt(el.querySelector('.trade-shares')?.value || '0');
     const price   = parseFloat(el.querySelector('.trade-price')?.value || '0');
-    const pnl     = parseInt(el.querySelector('.trade-pnl')?.value || '0');
+    const pnlRaw  = el.querySelector('.trade-pnl')?.value ?? '';
+    const pnlParsed = parseInt(pnlRaw);
+    // 売りでかつ値が入力されている場合のみpnlを記録。それ以外はnull（累計損益に含めない）
+    const pnl = (action === 'sell' && pnlRaw !== '' && !isNaN(pnlParsed)) ? pnlParsed : null;
     if (ticker && action && shares > 0 && price > 0) {
-      trades.push({ ticker, company_name: company, action, shares, price, pnl: pnl || 0 });
+      trades.push({ ticker, company_name: company, action, shares, price, pnl });
     }
   });
   if (trades.length === 0) { toast('取引を1件以上入力してください'); return; }
