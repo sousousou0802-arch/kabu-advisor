@@ -391,15 +391,25 @@ def api_history(db: Session = Depends(get_db)):
     trades = list_trade_results(db, limit=90)
 
     trades_by_proposal: dict[int, list] = {}
+    orphan_trades: list = []  # proposal_id=None（手動記録）
     for t in trades:
-        trades_by_proposal.setdefault(t.proposal_id, []).append(t)
+        if t.proposal_id is None:
+            orphan_trades.append(t)
+        else:
+            trades_by_proposal.setdefault(t.proposal_id, []).append(t)
 
     history = []
+    seen_dates = set()
     for p in proposals:
         t_list = trades_by_proposal.get(p.id, [])
-        day_pnl = sum(t.pnl for t in t_list if t.pnl)
+        # 同日の手動記録も合算して表示
+        p_date_str = str(p.date)
+        if p_date_str not in seen_dates:
+            t_list = t_list + [t for t in orphan_trades if str(t.date) == p_date_str]
+            seen_dates.add(p_date_str)
+        day_pnl = sum(t.pnl for t in t_list if t.pnl is not None)
         history.append({
-            "date": str(p.date),
+            "date": p_date_str,
             "proposal_id": p.id,
             "final_proposal": p.final_proposal,
             "confidence": p.confidence,

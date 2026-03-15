@@ -185,7 +185,7 @@ def save_proposal(db: Session, data: dict) -> Proposal:
 
 
 def get_proposal_by_date(db: Session, target_date: date) -> Optional[Proposal]:
-    return db.query(Proposal).filter(Proposal.date == target_date).first()
+    return db.query(Proposal).filter(Proposal.date == target_date).order_by(Proposal.id.desc()).first()
 
 
 def get_latest_proposal(db: Session) -> Optional[Proposal]:
