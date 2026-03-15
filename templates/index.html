@@ -349,10 +349,10 @@ async function loadStatus() {
   // 利益=緑、損失=赤（日本株標準）
   pnlEl.className = 'asset-value ' + (pnl > 0 ? 'green' : pnl < 0 ? 'red' : '');
 
-  // 進捗（元手→目標）
-  if (data.capital && data.target_amount && data.capital < data.target_amount) {
-    const pct = Math.max(0, Math.round((pnl) / (data.target_amount - data.capital) * 100));
-    document.getElementById('hdr-pct').textContent = pct + '%';
+  // 進捗（元手→目標）：total_assetsベースで計算（APIが返すgoal_progress_pctを使用）
+  if (data.goal_progress_pct !== undefined) {
+    const pct = Math.max(0, data.goal_progress_pct);
+    document.getElementById('hdr-pct').textContent = pct.toFixed(1) + '%';
     document.getElementById('hdr-fill').style.width = Math.min(pct, 100) + '%';
   }
 

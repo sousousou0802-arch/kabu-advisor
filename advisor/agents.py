@@ -573,7 +573,7 @@ def _parse_candidates(screening_text: str) -> list[str]:
     # スクリーナーが銘柄を出せなかった場合はフォールバックユニバースを使う
     if not result:
         logger.warning("スクリーナーが銘柄を返さなかった。フォールバックユニバースを使用。")
-        result = FALLBACK_UNIVERSE[:5]
+        result = BROAD_UNIVERSE_FALLBACK[:5]
     return result
 
 

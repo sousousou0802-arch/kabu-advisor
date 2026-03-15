@@ -360,13 +360,22 @@ def api_portfolio_edit(ticker: str, req: EditPositionRequest, db: Session = Depe
     if req.company_name is not None:
         pos.company_name = req.company_name
     if req.shares is not None:
+        if req.shares <= 0:
+            # 株数が0以下なら保有削除
+            db.delete(pos)
+            db.commit()
+            cash_delta = old_cost  # 全額現金に戻す
+            settings = get_settings(db)
+            if settings and cash_delta != 0:
+                upsert_settings(db, {"current_cash": (settings.current_cash or 0) + cash_delta})
+            return {"ok": True}
         pos.shares = req.shares
     if req.avg_price is not None:
         pos.avg_price = req.avg_price
 
     # 修正後のコスト差額を現金残高に反映
     new_cost = int(pos.shares * pos.avg_price)
-    cash_delta = old_cost - new_cost  # 株数・単価を減らした分だけ現金が戻る
+    cash_delta = old_cost - new_cost
     if cash_delta != 0:
         settings = get_settings(db)
         if settings:

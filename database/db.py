@@ -163,6 +163,8 @@ def reduce_position(db: Session, ticker: str, shares: int) -> Optional[Portfolio
     existing.shares -= shares
     if existing.shares <= 0:
         db.delete(existing)
+        db.commit()
+        return None
     db.commit()
     return existing
 
@@ -209,5 +211,5 @@ def list_trade_results(db: Session, limit: int = 60) -> list[TradeResult]:
 
 
 def get_total_pnl(db: Session) -> int:
-    results = db.query(TradeResult).filter(TradeResult.pnl != None).all()
-    return sum(r.pnl for r in results if r.pnl)
+    results = db.query(TradeResult).filter(TradeResult.pnl.isnot(None)).all()
+    return sum(r.pnl for r in results)
