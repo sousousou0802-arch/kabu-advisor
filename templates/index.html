@@ -137,6 +137,10 @@
       <div class="progress-label"><span>目標進捗</span><span id="hdr-pct">--%</span></div>
       <div class="progress-bar"><div class="progress-fill" id="hdr-fill" style="width:0%"></div></div>
     </div>
+    <div id="trajectory-row" style="display:none;margin-top:8px;gap:6px;align-items:center;font-size:11px">
+      <span id="trajectory-badge" style="padding:2px 8px;border-radius:10px;font-weight:700;font-size:11px"></span>
+      <span id="trajectory-detail" style="color:var(--text2)"></span>
+    </div>
   </div>
 
   <!-- タブ -->
@@ -350,6 +354,27 @@ async function loadStatus() {
     const pct = Math.max(0, Math.round((pnl) / (data.target_amount - data.capital) * 100));
     document.getElementById('hdr-pct').textContent = pct + '%';
     document.getElementById('hdr-fill').style.width = Math.min(pct, 100) + '%';
+  }
+
+  // 軌道インジケーター
+  if (data.trajectory) {
+    const trajRow = document.getElementById('trajectory-row');
+    const trajBadge = document.getElementById('trajectory-badge');
+    const trajDetail = document.getElementById('trajectory-detail');
+    trajRow.style.display = 'flex';
+    const colors = {
+      '超過達成ペース': { bg: 'rgba(52,211,153,.2)', color: 'var(--green)' },
+      '順調':           { bg: 'rgba(52,211,153,.15)', color: 'var(--green)' },
+      '遅延':           { bg: 'rgba(251,191,36,.2)',  color: 'var(--yellow)' },
+      '大幅遅延':       { bg: 'rgba(248,113,113,.2)', color: 'var(--red)' },
+    };
+    const c = colors[data.trajectory] || { bg: 'rgba(148,163,184,.15)', color: 'var(--text2)' };
+    trajBadge.textContent = data.trajectory;
+    trajBadge.style.background = c.bg;
+    trajBadge.style.color = c.color;
+    const gp = (data.goal_progress_pct || 0).toFixed(1);
+    const dp = (data.days_elapsed_pct || 0).toFixed(1);
+    trajDetail.textContent = `目標達成 ${gp}% ／ 期間消化 ${dp}%`;
   }
 
   // ポートフォリオ表示（損益自動計算用にグローバル保持）

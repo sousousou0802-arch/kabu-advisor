@@ -96,7 +96,8 @@ def api_status(db: Session = Depends(get_db)):
     has_today = latest and str(latest.date) == today_str
 
     deadline_date = settings.deadline
-    remaining_days = (deadline_date - date.today()).days if deadline_date else None
+    today_date = date.today()
+    remaining_days = (deadline_date - today_date).days if deadline_date else None
 
     total_pnl = get_total_pnl(db)
 
@@ -104,11 +105,48 @@ def api_status(db: Session = Depends(get_db)):
     today_trades = [t for t in list_trade_results(db, limit=30)
                     if str(t.date) == today_str]
 
+    # 目標進捗・軌道計算
+    capital = settings.capital or 0
+    target_amount = settings.target_amount or 0
+    current_cash = settings.current_cash or 0
+    portfolio_value = int(sum(p.avg_price * p.shares for p in portfolio))
+    total_assets = current_cash + portfolio_value
+
+    goal_needed = target_amount - capital
+    goal_achieved = total_assets - capital
+    goal_progress_pct = round(goal_achieved / goal_needed * 100, 1) if goal_needed > 0 else 0.0
+
+    # 経過日数割合（settings.created_at を開始日として使用）
+    if settings.created_at and deadline_date:
+        start_date = settings.created_at.date()
+        total_days = (deadline_date - start_date).days
+        elapsed_days = (today_date - start_date).days
+        days_elapsed_pct = round(elapsed_days / total_days * 100, 1) if total_days > 0 else 0.0
+        # 現ペースでの期日到達時予測
+        if elapsed_days > 0:
+            daily_gain = goal_achieved / elapsed_days
+            projected_final = capital + daily_gain * total_days
+        else:
+            projected_final = total_assets
+    else:
+        days_elapsed_pct = 0.0
+        projected_final = total_assets
+
+    gap = goal_progress_pct - days_elapsed_pct
+    if gap >= 10:
+        trajectory = "超過達成ペース"
+    elif gap >= -10:
+        trajectory = "順調"
+    elif gap >= -30:
+        trajectory = "遅延"
+    else:
+        trajectory = "大幅遅延"
+
     return {
         "configured": True,
-        "capital": settings.capital,
-        "current_cash": settings.current_cash,
-        "target_amount": settings.target_amount,
+        "capital": capital,
+        "current_cash": current_cash,
+        "target_amount": target_amount,
         "deadline": str(settings.deadline),
         "remaining_days": remaining_days,
         "portfolio": portfolio_list,
@@ -117,6 +155,11 @@ def api_status(db: Session = Depends(get_db)):
         "latest_proposal_date": str(latest.date) if latest else None,
         "today_recorded": len(today_trades) > 0,
         "today_trade_count": len(today_trades),
+        "total_assets": total_assets,
+        "goal_progress_pct": goal_progress_pct,
+        "days_elapsed_pct": days_elapsed_pct,
+        "trajectory": trajectory,
+        "projected_final": int(projected_final),
     }
 
 
@@ -150,11 +193,33 @@ def api_generate(db: Session = Depends(get_db)):
          "shares": p.shares, "avg_price": p.avg_price}
         for p in portfolio
     ]
+    # 軌道計算（エージェントに渡すため再計算）
+    _cap = settings.capital or 0
+    _cash = settings.current_cash or 0
+    _target = settings.target_amount or 0
+    _pv = int(sum(p["avg_price"] * p["shares"] for p in portfolio_list))
+    _total = _cash + _pv
+    _goal_needed = _target - _cap
+    _goal_achieved = _total - _cap
+    _goal_pct = round(_goal_achieved / _goal_needed * 100, 1) if _goal_needed > 0 else 0.0
+    if settings.created_at and settings.deadline:
+        _start = settings.created_at.date()
+        _total_days = (settings.deadline - _start).days
+        _elapsed = (date.today() - _start).days
+        _days_pct = round(_elapsed / _total_days * 100, 1) if _total_days > 0 else 0.0
+    else:
+        _days_pct = 0.0
+    _gap = _goal_pct - _days_pct
+    _traj = "超過達成ペース" if _gap >= 10 else "順調" if _gap >= -10 else "遅延" if _gap >= -30 else "大幅遅延"
+
     settings_dict = {
         "capital": settings.capital,
         "current_cash": settings.current_cash,
         "target_amount": settings.target_amount,
         "deadline": str(settings.deadline),
+        "goal_progress_pct": _goal_pct,
+        "days_elapsed_pct": _days_pct,
+        "trajectory": _traj,
     }
     today = date.today()
     past_proposals = [p for p in list_proposals(db, limit=6) if p.date != today][:5]
