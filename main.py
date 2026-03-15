@@ -351,8 +351,9 @@ def api_result(req: TradeResultRequest, db: Session = Depends(get_db)):
         if action == "buy":
             current_cash -= int(shares * price)
         elif action == "sell":
-            # 実際に保有していた株数だけ現金に加算（記録ミスで超過しても過剰加算しない）
-            actual = min(shares, pre_sell_shares.get(ticker, shares))
+            # 保有記録がある場合のみ上限キャップ。ない場合はそのまま加算
+            held = pre_sell_shares.get(ticker)
+            actual = min(shares, held) if held else shares
             current_cash += int(actual * price)
     upsert_settings(db, {"current_cash": current_cash})
 
