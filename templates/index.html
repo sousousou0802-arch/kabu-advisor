@@ -121,7 +121,7 @@
         <div class="asset-value green" id="hdr-cash">---</div>
       </div>
       <div class="asset-box">
-        <div class="asset-label">目標</div>
+        <div class="asset-label">総資産</div>
         <div class="asset-value yellow" id="hdr-target">---</div>
       </div>
       <div class="asset-box">
@@ -129,7 +129,7 @@
         <div class="asset-value" id="hdr-days">---</div>
       </div>
       <div class="asset-box">
-        <div class="asset-label">累計損益</div>
+        <div class="asset-label">確定損益</div>
         <div class="asset-value" id="hdr-pnl">---</div>
       </div>
     </div>
@@ -244,7 +244,7 @@
             <div id="port-count" style="font-size:13px;font-weight:700"></div>
           </div>
           <div>
-            <div style="font-size:10px;color:var(--text2);margin-bottom:2px">含み損益（概算）</div>
+            <div style="font-size:10px;color:var(--text2);margin-bottom:2px">含み損益</div>
             <div id="port-unrealized" style="font-size:13px;font-weight:700"></div>
           </div>
         </div>
@@ -356,7 +356,7 @@ async function loadStatus() {
   document.getElementById('today-main').style.display = 'block';
 
   document.getElementById('hdr-cash').textContent = (data.current_cash || 0).toLocaleString() + '円';
-  document.getElementById('hdr-target').textContent = (data.target_amount || 0).toLocaleString() + '円';
+  document.getElementById('hdr-target').textContent = (data.total_assets || 0).toLocaleString() + '円';
   document.getElementById('hdr-days').textContent = (data.remaining_days ?? '--') + '日';
 
   const pnl = data.total_pnl || 0;
@@ -395,7 +395,7 @@ async function loadStatus() {
 
   // ポートフォリオ表示（損益自動計算用にグローバル保持）
   window._portfolio = data.portfolio || [];
-  renderPortfolio(data.portfolio || []);
+  renderPortfolio(data.portfolio || [], window._prices || {});
 
   // サイクル状態を更新
   const today = new Date().toISOString().slice(0, 10);
@@ -422,15 +422,15 @@ async function loadStatus() {
     recordEl.style.color = 'var(--text2)';
   }
 
-  // 設定フォームに反映
-  if (data.capital)       document.getElementById('set-capital').value = data.capital;
-  if (data.current_cash)  document.getElementById('set-cash').value = data.current_cash;
-  if (data.target_amount) document.getElementById('set-target').value = data.target_amount;
-  if (data.deadline)      document.getElementById('set-deadline').value = data.deadline;
+  // 設定フォームに反映（0を含む全値を反映するため != null で判定）
+  if (data.capital       != null) document.getElementById('set-capital').value = data.capital;
+  if (data.current_cash  != null) document.getElementById('set-cash').value = data.current_cash;
+  if (data.target_amount != null) document.getElementById('set-target').value = data.target_amount;
+  if (data.deadline             ) document.getElementById('set-deadline').value = data.deadline;
 }
 
 // ── ポートフォリオ描画 ──────────────────────────────────────────────────────
-function renderPortfolio(portfolio) {
+function renderPortfolio(portfolio, prices = {}) {
   const el = document.getElementById('portfolio-list');
   const summaryEl = document.getElementById('portfolio-summary');
   if (!portfolio.length) {
@@ -441,26 +441,53 @@ function renderPortfolio(portfolio) {
 
   // サマリー計算
   const totalCost = portfolio.reduce((s, p) => s + p.shares * p.avg_price, 0);
-  // total_assetsからcurrent_cashを引いた値が株式評価額（ただし取得単価ベース）
-  // 含み損益はtotal_pnl（確定）とは別に計算できないため「---」または概算を表示
   summaryEl.style.display = 'block';
   document.getElementById('port-total-value').textContent = Math.round(totalCost).toLocaleString() + '円';
   document.getElementById('port-count').textContent = portfolio.length + '銘柄';
-  document.getElementById('port-unrealized').textContent = '取得単価ベース';
-  document.getElementById('port-unrealized').style.color = 'var(--text2)';
-  document.getElementById('port-unrealized').style.fontSize = '11px';
+
+  // 含み損益合計（現在価格がある銘柄のみ）
+  let totalUnrealized = 0;
+  let anyPrice = false;
+  portfolio.forEach(p => {
+    const cp = prices[p.ticker];
+    if (cp != null) { totalUnrealized += (cp - p.avg_price) * p.shares; anyPrice = true; }
+  });
+  const unrealEl = document.getElementById('port-unrealized');
+  if (anyPrice) {
+    const u = Math.round(totalUnrealized);
+    unrealEl.textContent = (u >= 0 ? '+' : '') + u.toLocaleString() + '円';
+    unrealEl.style.color = u > 0 ? 'var(--green)' : u < 0 ? 'var(--red)' : 'var(--text2)';
+    unrealEl.style.fontSize = '13px';
+  } else {
+    unrealEl.textContent = '取得中...';
+    unrealEl.style.color = 'var(--text2)';
+    unrealEl.style.fontSize = '11px';
+  }
 
   el.innerHTML = portfolio.map(p => {
     const cost = Math.round(p.shares * p.avg_price);
+    const cp = prices[p.ticker];
+    let pnlHtml = '';
+    if (cp != null) {
+      const pnl = Math.round((cp - p.avg_price) * p.shares);
+      const pnlPct = ((cp - p.avg_price) / p.avg_price * 100).toFixed(1);
+      const color = pnl > 0 ? 'var(--green)' : pnl < 0 ? 'var(--red)' : 'var(--text2)';
+      const sign = pnl >= 0 ? '+' : '';
+      pnlHtml = `<div style="font-size:11px;color:${color};margin-top:1px">${sign}${pnl.toLocaleString()}円 (${sign}${pnlPct}%)</div>`;
+    }
+    const currentVal = cp != null ? Math.round(cp * p.shares) : null;
+    const valText = currentVal != null ? currentVal.toLocaleString() + '円' : cost.toLocaleString() + '円';
+    const valLabel = cp != null ? '現在評価額' : '取得評価額';
     return `
     <div class="port-item" id="port-${p.ticker}">
       <div class="port-left">
         <div class="ticker">${p.ticker} <span style="font-size:12px;color:var(--text2)">${p.company_name || ''}</span></div>
-        <div class="detail">${p.shares}株 @ ${Math.round(p.avg_price).toLocaleString()}円</div>
+        <div class="detail">${p.shares}株 @ ${Math.round(p.avg_price).toLocaleString()}円${cp != null ? ' → ' + Math.round(cp).toLocaleString() + '円' : ''}</div>
+        ${pnlHtml}
       </div>
       <div style="text-align:right;margin-right:10px;flex-shrink:0">
-        <div style="font-size:13px;font-weight:700">${cost.toLocaleString()}円</div>
-        <div style="font-size:10px;color:var(--text2)">評価額</div>
+        <div style="font-size:13px;font-weight:700">${valText}</div>
+        <div style="font-size:10px;color:var(--text2)">${valLabel}</div>
       </div>
       <button onclick="startEditPortfolio('${p.ticker}','${p.company_name||''}',${p.shares},${p.avg_price})" style="flex-shrink:0;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;font-weight:600">編集</button>
     </div>
@@ -483,6 +510,14 @@ function renderPortfolio(portfolio) {
       <button onclick="cancelEditPortfolio('${p.ticker}')" style="background:none;border:none;color:var(--text2);cursor:pointer">キャンセル</button>
     </div>`;
   }).join('');
+}
+
+// ── 保有銘柄の現在価格を取得して再描画 ──────────────────────────────────────
+async function loadPortfolioPrices() {
+  if (!window._portfolio || !window._portfolio.length) return;
+  const data = await fetch('/api/prices').then(r => r.json()).catch(() => ({ prices: {} }));
+  window._prices = data.prices || {};
+  renderPortfolio(window._portfolio, window._prices);
 }
 
 function startEditPortfolio(ticker, name, shares, price) {
@@ -860,6 +895,7 @@ function showTab(btn, name) {
   document.getElementById('tab-' + name).classList.add('active');
   btn.classList.add('active');
   if (name === 'history') loadHistory();
+  if (name === 'portfolio') loadPortfolioPrices();
 }
 
 function toast(msg) {

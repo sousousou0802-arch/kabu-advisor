@@ -340,7 +340,8 @@ def api_result(req: TradeResultRequest, db: Session = Depends(get_db)):
         elif action == "sell" and ticker and shares:
             reduce_position(db, ticker, shares)
 
-    # 現金残高を取引内容から自動計算
+    # 現金残高を取引内容から自動計算（全オブジェクトを明示的に期限切れにしてDB最新値を取得）
+    db.expire_all()
     settings = get_settings(db)
     current_cash = (settings.current_cash or 0) if settings else 0
     for trade in req.trades:
@@ -396,6 +397,25 @@ def api_portfolio_edit(ticker: str, req: EditPositionRequest, db: Session = Depe
 
     db.commit()
     return {"ok": True}
+
+
+@app.get("/api/prices")
+def api_prices(db: Session = Depends(get_db)):
+    """保有銘柄の現在株価をyfinanceから取得する"""
+    import yfinance as yf
+    portfolio = get_portfolio(db)
+    if not portfolio:
+        return {"prices": {}}
+    prices = {}
+    for pos in portfolio:
+        try:
+            fi = yf.Ticker(pos.ticker).fast_info
+            p = getattr(fi, "last_price", None) or getattr(fi, "previous_close", None)
+            prices[pos.ticker] = round(float(p)) if p else None
+        except Exception as e:
+            logger.warning(f"価格取得失敗 {pos.ticker}: {e}")
+            prices[pos.ticker] = None
+    return {"prices": prices}
 
 
 @app.get("/api/history")
