@@ -152,24 +152,51 @@
   <div id="tab-today" class="tab-content active">
     <div id="not-configured" class="status-msg" style="display:none">設定タブから初期設定を行ってください。</div>
     <div id="today-main" style="display:none">
-      <div class="card">
+
+      <!-- ① 今日のサイクル状態 -->
+      <div class="card" id="cycle-card">
+        <div class="card-title">今日のサイクル</div>
+        <div style="display:flex;gap:8px;margin-bottom:14px">
+          <div style="flex:1;text-align:center;padding:10px 6px;background:var(--surface2);border-radius:8px">
+            <div style="font-size:11px;color:var(--text2);margin-bottom:4px">① 提案</div>
+            <div id="cycle-proposal" style="font-size:13px;font-weight:700">---</div>
+          </div>
+          <div style="font-size:18px;color:var(--border);align-self:center">›</div>
+          <div style="flex:1;text-align:center;padding:10px 6px;background:var(--surface2);border-radius:8px">
+            <div style="font-size:11px;color:var(--text2);margin-bottom:4px">② 発注</div>
+            <div style="font-size:13px;font-weight:700;color:var(--text2)">手動</div>
+          </div>
+          <div style="font-size:18px;color:var(--border);align-self:center">›</div>
+          <div style="flex:1;text-align:center;padding:10px 6px;background:var(--surface2);border-radius:8px">
+            <div style="font-size:11px;color:var(--text2);margin-bottom:4px">③ 記録</div>
+            <div id="cycle-record" style="font-size:13px;font-weight:700">---</div>
+          </div>
+        </div>
         <div id="gen-msg" class="status-msg" style="display:none"></div>
         <button class="btn btn-primary" id="btn-gen" onclick="generate()">今日の打ち手を生成</button>
-        <p style="font-size:11px;color:var(--text2);text-align:center;margin-top:7px">※ Claude APIを5回呼び出します（数分かかります）</p>
+        <p style="font-size:11px;color:var(--text2);text-align:center;margin-top:7px">※ 数分かかります</p>
       </div>
+
+      <!-- ② 提案表示エリア -->
       <div id="proposal-area" style="display:none">
         <div class="card">
-          <div class="card-title">本日のトレード指示</div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <div class="card-title" style="margin-bottom:0">本日のトレード指示</div>
+            <div id="proposal-date-badge" style="font-size:11px;color:var(--text2)"></div>
+          </div>
           <div id="conf-badge" class="confidence-badge"></div>
           <div id="final-proposal" class="proposal-box"></div>
         </div>
-        <!-- 結果記録 -->
+
+        <!-- ③ 取引記録 -->
         <div class="card" id="result-card">
-          <div class="card-title">取引結果を記録</div>
-          <p style="font-size:12px;color:var(--text2);margin-bottom:10px">実際に行った取引を記録してください。</p>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <div class="card-title" style="margin-bottom:0">取引結果を記録</div>
+            <div id="record-status" style="font-size:11px;color:var(--text2)"></div>
+          </div>
           <div id="trade-inputs"></div>
           <button onclick="addTradeInput()" style="width:100%;padding:9px;background:none;border:1px dashed var(--border);border-radius:8px;color:var(--text2);font-size:13px;cursor:pointer;margin-bottom:12px">＋ 取引を追加</button>
-          <button class="btn btn-success" onclick="saveResult()">結果を保存</button>
+          <button class="btn btn-success" onclick="saveResult()">記録を保存</button>
         </div>
       </div>
     </div>
@@ -328,6 +355,31 @@ async function loadStatus() {
   // ポートフォリオ表示（損益自動計算用にグローバル保持）
   window._portfolio = data.portfolio || [];
   renderPortfolio(data.portfolio || []);
+
+  // サイクル状態を更新
+  const today = new Date().toISOString().slice(0, 10);
+  const proposalEl = document.getElementById('cycle-proposal');
+  const recordEl = document.getElementById('cycle-record');
+  if (data.has_today_proposal) {
+    proposalEl.textContent = '✅ 生成済み';
+    proposalEl.style.color = 'var(--green)';
+  } else if (data.latest_proposal_date) {
+    proposalEl.textContent = `⚠️ ${data.latest_proposal_date}`;
+    proposalEl.style.color = 'var(--yellow)';
+  } else {
+    proposalEl.textContent = '⏳ 未生成';
+    proposalEl.style.color = 'var(--text2)';
+  }
+  if (data.today_recorded) {
+    recordEl.textContent = `✅ ${data.today_trade_count}件`;
+    recordEl.style.color = 'var(--green)';
+  } else if (data.has_today_proposal) {
+    recordEl.textContent = '📝 未記録';
+    recordEl.style.color = 'var(--yellow)';
+  } else {
+    recordEl.textContent = '---';
+    recordEl.style.color = 'var(--text2)';
+  }
 
   // 設定フォームに反映
   if (data.capital)       document.getElementById('set-capital').value = data.capital;
@@ -557,6 +609,18 @@ function displayProposal(data) {
   badge.className = 'confidence-badge ' + (conf >= 70 ? 'conf-high' : conf >= 50 ? 'conf-mid' : 'conf-low');
   document.getElementById('final-proposal').textContent = data.final_proposal || '';
 
+  // 提案日付バッジ
+  const today = new Date().toISOString().slice(0, 10);
+  const pdate = data.date || '';
+  const pdateEl = document.getElementById('proposal-date-badge');
+  if (pdate === today) {
+    pdateEl.textContent = '今日の提案';
+    pdateEl.style.color = 'var(--green)';
+  } else {
+    pdateEl.textContent = `${pdate} の提案（古い）`;
+    pdateEl.style.color = 'var(--yellow)';
+  }
+
   // 議論詳細
   document.getElementById('detail-empty').style.display = 'none';
   document.getElementById('detail-content').style.display = 'block';
@@ -676,6 +740,8 @@ async function saveResult() {
   });
   if (res.ok) {
     toast('結果を保存しました');
+    document.getElementById('record-status').textContent = '✅ 保存済み';
+    document.getElementById('record-status').style.color = 'var(--green)';
     await loadStatus();
   } else {
     toast('保存エラー');

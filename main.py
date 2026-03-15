@@ -100,6 +100,10 @@ def api_status(db: Session = Depends(get_db)):
 
     total_pnl = get_total_pnl(db)
 
+    # 今日の記録済みトレードを確認
+    today_trades = [t for t in list_trade_results(db, limit=30)
+                    if str(t.date) == today_str]
+
     return {
         "configured": True,
         "capital": settings.capital,
@@ -111,6 +115,8 @@ def api_status(db: Session = Depends(get_db)):
         "total_pnl": total_pnl,
         "has_today_proposal": bool(has_today),
         "latest_proposal_date": str(latest.date) if latest else None,
+        "today_recorded": len(today_trades) > 0,
+        "today_trade_count": len(today_trades),
     }
 
 
