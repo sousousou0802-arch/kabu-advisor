@@ -353,12 +353,25 @@ def api_portfolio_edit(ticker: str, req: EditPositionRequest, db: Session = Depe
     pos = db.query(Portfolio).filter(Portfolio.ticker == ticker.upper()).first()
     if not pos:
         raise HTTPException(status_code=404, detail="銘柄が見つかりません")
+
+    # 修正前のコスト（現金への影響を計算するため）
+    old_cost = int(pos.shares * pos.avg_price)
+
     if req.company_name is not None:
         pos.company_name = req.company_name
     if req.shares is not None:
         pos.shares = req.shares
     if req.avg_price is not None:
         pos.avg_price = req.avg_price
+
+    # 修正後のコスト差額を現金残高に反映
+    new_cost = int(pos.shares * pos.avg_price)
+    cash_delta = old_cost - new_cost  # 株数・単価を減らした分だけ現金が戻る
+    if cash_delta != 0:
+        settings = get_settings(db)
+        if settings:
+            upsert_settings(db, {"current_cash": (settings.current_cash or 0) + cash_delta})
+
     db.commit()
     return {"ok": True}
 
