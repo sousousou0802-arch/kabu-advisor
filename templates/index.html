@@ -129,9 +129,14 @@
         <div class="asset-value" id="hdr-days">---</div>
       </div>
       <div class="asset-box">
-        <div class="asset-label">確定損益</div>
+        <div class="asset-label">目標差分</div>
         <div class="asset-value" id="hdr-pnl">---</div>
       </div>
+    </div>
+    <div style="padding:6px 0 2px;font-size:12px;color:var(--text2);display:flex;gap:6px;align-items:baseline;flex-wrap:wrap">
+      <span style="font-size:13px;color:var(--text1);font-weight:600">総資産</span>
+      <span id="hdr-total-assets" style="font-size:14px;font-weight:700;color:var(--accent)">---</span>
+      <span id="hdr-breakdown" style="color:var(--text2)"></span>
     </div>
     <div class="progress-wrap">
       <div class="progress-label"><span>目標進捗</span><span id="hdr-pct">--%</span></div>
@@ -368,11 +373,19 @@ async function loadStatus() {
   document.getElementById('hdr-target').textContent = (data.target_amount || 0).toLocaleString() + '円';
   document.getElementById('hdr-days').textContent = (data.remaining_days ?? '--') + '日';
 
-  const pnl = data.total_pnl || 0;
-  const pnlEl = document.getElementById('hdr-pnl');
-  pnlEl.textContent = (pnl >= 0 ? '+' : '') + pnl.toLocaleString() + '円';
-  // 利益=緑、損失=赤（日本株標準）
-  pnlEl.className = 'asset-value ' + (pnl > 0 ? 'green' : pnl < 0 ? 'red' : '');
+  // 目標差分（総資産 - 目標）
+  const totalAssets = data.total_assets || 0;
+  const targetAmount = data.target_amount || 0;
+  const diff = totalAssets - targetAmount;
+  const diffEl = document.getElementById('hdr-pnl');
+  diffEl.textContent = (diff >= 0 ? '+' : '') + diff.toLocaleString() + '円';
+  diffEl.className = 'asset-value ' + (diff > 0 ? 'green' : diff < 0 ? 'red' : '');
+
+  // 総資産 + 内訳
+  document.getElementById('hdr-total-assets').textContent = totalAssets.toLocaleString() + '円';
+  const stockVal = totalAssets - (data.current_cash || 0);
+  document.getElementById('hdr-breakdown').textContent =
+    `現金 ${(data.current_cash || 0).toLocaleString()}円 ＋ 株式 ${stockVal.toLocaleString()}円`;
 
   // 進捗（元手→目標）：total_assetsベースで計算（APIが返すgoal_progress_pctを使用）
   if (data.goal_progress_pct !== undefined) {
