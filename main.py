@@ -119,9 +119,10 @@ def api_status(db: Session = Depends(get_db)):
     # 目標進捗・軌道計算
     capital = settings.capital or 0
     target_amount = settings.target_amount or 0
-    current_cash = settings.current_cash or 0
-    portfolio_value = int(sum(p.avg_price * p.shares for p in portfolio))
-    total_assets = current_cash + portfolio_value
+    portfolio_cost = int(sum(p.avg_price * p.shares for p in portfolio))
+    current_cash = capital - portfolio_cost + total_pnl
+    portfolio_value = portfolio_cost
+    total_assets = current_cash + portfolio_value  # = capital + total_pnl
 
     goal_needed = target_amount - capital
     goal_achieved = total_assets - capital
